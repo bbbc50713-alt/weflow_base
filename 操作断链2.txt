@@ -1,0 +1,66 @@
+# 将 WeFlow-main 5.0 合并进 WeFlow-AI-Reply-main，并保留 AI Reply 功能
+
+## Summary
+
+- 直接更新 `A:\hxm_in_wechat\WeFlow-AI-Reply-main`，但执行前先完整备份到同级时间戳目录。
+- 以 `A:\hxm_in_wechat\WeFlow-main` 作为最新底座，采用其 `package.json`、`package-lock.json`、资源、导出架构、welive 资源和 5.0.0 打包配置。
+- 重新移植 AI Reply 独有功能：AI 自动回复服务、发送器、蒸馏、前端页面、IPC、preload API、类型声明、文档和测试脚本。
+- 不把 AI 版旧的 `electron/services/exportService.ts` 和旧 `src/pages/ExportPage.*` 覆盖回去；保留 WeFlow 5.0 的模块化导出实现。
+
+## Key Changes
+
+- 安全准备：
+  - 复制 `WeFlow-AI-Reply-main` 到 `WeFlow-AI-Reply-main.backup-<timestamp>`。
+  - 清理目标目录内旧源码后，将 `WeFlow-main` 镜像到 `WeFlow-AI-Reply-main`，排除 `node_modules`、`dist`、`dist-electron`、`release`、`.git`。
+  - 保留备份目录作为 AI 功能移植源和回滚点。
+
+- 重新加入 AI Reply 独有源码：
+  - 恢复 `electron/services/ai-reply/**`。
+  - 恢复 `src/components/AIReply/**`、`src/pages/AIReplyPage.*`、`src/stores/aiReplyStore.ts`、`src/types/ai-reply.ts`。
+  - 恢复 `docs/ai-reply-senders.md`、`docs/ai-reply-sender-development-plan.md`、`docs/distill-improvement-plan.md`。
+  - 恢复 `scripts/test-ai-reply-fixes.cjs` 和 `scripts/test-e2e-reply.cjs`。
+
+- 移植 AI Reply 到 WeFlow 5.0 主进程：
+  - 在 WeFlow 5.0 的 `electron/main.ts` 中加入 `AIReplyService` 初始化、AI 配置加载/保存、SSE 配置、断连补拉、蒸馏消息读取、前置检查和全部 `aiReply:*` IPC handlers。
+  - 保持 WeFlow 5.0 的 `import { exportService } from './services/export'`，不要回退到 AI 旧版 `./services/exportService`。
+  - AI 回复依然使用本机 HTTP API `/api/v1/push/messages` 作为 SSE 来源，启动前要求 HTTP API、消息推送、Token、模型和发送器健康检查通过。
+  - `config:clear` 继续清理消息推送状态；AI 配置存储键使用现有 `aiReplyConfig`。
+
+- 移植 preload、类型和前端入口：
+  - 在 WeFlow 5.0 的 `electron/preload.ts` 中新增 `electronAPI.aiReply` namespace，方法和事件与 `aiReplyStore.ts` 当前调用保持一致。
+  - 在 `src/types/electron.d.ts` 中补齐 `aiReply` API 类型。
+  - 在 WeFlow 5.0 的 `src/App.tsx` 中导入 `AIReplyPage`，新增 `/ai-reply` route，保持 `/export` keepalive 逻辑不变。
+  - 在 `src/components/Sidebar.tsx` 中新增 “AI 回复” 导航项，放在“数据库备份”附近，使用 `Bot` 图标。
+  - 保留 WeFlow 5.0 的 `src/pages/Export/**`、`src/stores/exportTaskStore.ts`、`shared/**` 和 `resources/welive/**`。
+
+- 包与文档：
+  - `package.json` 以 WeFlow-main 5.0 为准：版本 `5.0.0`、artifactName、welive extraResources、依赖版本全部保留。
+  - 只在 README 中追加 AI Reply 功能说明、使用警告和 AI 文档链接，不覆盖 WeFlow 5.0 README 的主体。
+  - `package-lock.json` 使用 WeFlow-main 版本；如果移植后依赖缺失，再通过 `npm install` 更新 lockfile。
+
+## Test Plan
+
+- 依赖与静态检查：
+  - 在 `WeFlow-AI-Reply-main` 执行 `npm ci`。
+  - 执行 `npm run typecheck`，修复所有 TypeScript、preload 类型和 IPC 类型错误。
+  - 执行 `npx vite build` 或 `npm run build`，确认 Electron 主进程和前端都能构建。
+
+- WeFlow 原功能回归：
+  - 启动应用，完成微信数据库连接。
+  - 验证聊天列表、聊天记录、图片/视频/语音解析、联系人、朋友圈、统计分析、HTTP API、消息推送。
+  - 验证 WeFlow 5.0 的导出页面仍使用新模块化导出流程，导出 JSON/HTML/TXT/Excel 至少各一次。
+
+- AI Reply 功能回归：
+  - 打开侧边栏 “AI 回复”，确认页面、模型配置、触发规则、联系人选择、日志页面正常。
+  - 开启 HTTP API、消息推送和 Token 后，启动 AI 自动回复，确认 SSE 状态从 connecting 到 connected。
+  - 使用 manual sender 验证“收到消息 -> 触发规则 -> 生成回复 -> 写入日志”。
+  - 使用 ui-automation sender 在测试联系人上验证真实发送，并确认失败时不会误标记为已发送。
+  - 验证蒸馏功能能读取指定联系人聊天记录并生成 skill。
+
+## Assumptions
+
+- 合并结果直接落在 `WeFlow-AI-Reply-main`，但必须先做完整备份。
+- 打包配置、版本号、资源布局以 `WeFlow-main` 5.0 为准。
+- AI Reply 功能必须完整保留，但不能为了保留 AI 功能回退 WeFlow 5.0 的新导出架构、welive 资源、package 版本或主干功能。
+- 当前两个目录都没有 `.git`，因此执行时按文件镜像与人工移植处理，不依赖 Git merge。
+- 当前目录没有 `node_modules`，执行阶段需要重新安装依赖后再验证。

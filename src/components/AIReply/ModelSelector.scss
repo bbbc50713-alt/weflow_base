@@ -1,0 +1,130 @@
+.model-selector {
+  width: 100%;
+
+  .selector-input-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .model-input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 13px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    outline: none;
+
+    &:focus {
+      border-color: var(--primary);
+    }
+
+    &::placeholder {
+      color: var(--text-tertiary);
+    }
+  }
+
+  .fetch-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 14px;
+    border: 1px solid var(--primary);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--primary);
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+
+    &:hover {
+      background: var(--primary-light);
+    }
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  }
+
+  .selector-error {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--danger);
+  }
+
+  .model-dropdown {
+    margin-top: 4px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    box-shadow: var(--shadow-md);
+    max-height: 200px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .dropdown-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .dropdown-close {
+    border: none;
+    background: none;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    padding: 0;
+    display: flex;
+    align-items: center;
+  }
+
+  .dropdown-list {
+    overflow-y: auto;
+    max-height: 160px;
+  }
+
+  .dropdown-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s;
+
+    &:hover {
+      background: var(--bg-hover);
+    }
+
+    &.active {
+      color: var(--primary);
+      background: var(--primary-light);
+    }
+  }
+
+  .local-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--primary-light);
+    color: var(--primary);
+  }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

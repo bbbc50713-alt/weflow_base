@@ -1,0 +1,150 @@
+.xiaomi-mascot-window {
+  width: 118px;
+  height: 132px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
+  background: transparent;
+  user-select: none;
+  -webkit-app-region: drag;
+  cursor: default;
+}
+
+.xiaomi-mascot {
+  position: relative;
+  width: 78px;
+  height: 92px;
+  filter: drop-shadow(0 10px 18px rgba(28, 83, 216, 0.32));
+  animation: mascot-float 2.8s ease-in-out infinite;
+}
+
+.mascot-antenna {
+  position: absolute;
+  left: 34px;
+  top: 0;
+  width: 10px;
+  height: 16px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #6da4ff, #3e6af5);
+  box-shadow: 0 0 0 3px rgba(84, 131, 255, 0.2);
+}
+
+.mascot-head {
+  position: absolute;
+  left: 8px;
+  top: 12px;
+  width: 62px;
+  height: 43px;
+  border-radius: 22px 22px 18px 18px;
+  background: linear-gradient(180deg, #5b86ff 0%, #315ee9 100%);
+  box-shadow:
+    inset 0 5px 12px rgba(255, 255, 255, 0.28),
+    inset 0 -6px 12px rgba(11, 31, 128, 0.24),
+    0 0 0 2px rgba(122, 165, 255, 0.45);
+}
+
+.mascot-eye {
+  position: absolute;
+  top: 18px;
+  width: 12px;
+  height: 7px;
+  border-radius: 0 0 999px 999px;
+  border-bottom: 3px solid #9af3ff;
+}
+
+.mascot-eye.left {
+  left: 17px;
+}
+
+.mascot-eye.right {
+  right: 17px;
+}
+
+.mascot-body {
+  position: absolute;
+  left: 18px;
+  top: 52px;
+  width: 42px;
+  height: 34px;
+  border-radius: 12px 12px 16px 16px;
+  background: linear-gradient(180deg, #4c79ff 0%, #2350d7 100%);
+  box-shadow:
+    inset 0 4px 10px rgba(255, 255, 255, 0.22),
+    inset 0 -6px 12px rgba(10, 34, 141, 0.28);
+}
+
+.mascot-badge {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: #e9f7ff;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  text-shadow: 0 1px 4px rgba(18, 41, 120, 0.5);
+}
+
+.mascot-arm,
+.mascot-foot {
+  position: absolute;
+  background: #2f62ee;
+  box-shadow: inset 0 -4px 8px rgba(10, 31, 126, 0.28);
+}
+
+.mascot-arm {
+  top: 58px;
+  width: 12px;
+  height: 24px;
+  border-radius: 999px;
+}
+
+.mascot-arm.left {
+  left: 3px;
+  transform: rotate(18deg);
+}
+
+.mascot-arm.right {
+  right: 3px;
+  transform: rotate(-18deg);
+}
+
+.mascot-foot {
+  top: 83px;
+  width: 18px;
+  height: 10px;
+  border-radius: 0 0 999px 999px;
+}
+
+.mascot-foot.left {
+  left: 22px;
+}
+
+.mascot-foot.right {
+  right: 22px;
+}
+
+.mascot-caption {
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: #cfe8ff;
+  background: rgba(18, 38, 92, 0.74);
+  border: 1px solid rgba(120, 174, 255, 0.22);
+  box-shadow: 0 6px 18px rgba(12, 24, 70, 0.2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+@keyframes mascot-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-5px);
+  }
+}
