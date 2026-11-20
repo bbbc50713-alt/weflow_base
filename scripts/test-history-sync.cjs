@@ -12,6 +12,7 @@ const oldFetch = global.fetch
 const oldMock = global.__historyMock
 let uploads = 0
 let failUpload = false, slow = false, inFlight = 0, peak = 0
+let waitForWave
 const serverRows = new Map()
 const receipts = new Map()
 let runStatus = 'running'
@@ -37,6 +38,8 @@ global.__historyMock = {
     getContact: async () => ({ username: state.session, nickName: '测试会话' }), mapRowsToMessagesForApi: rows => rows.map(map),
   } },
   wcdb: { wcdbService: {
+    getContact:async id=>({success:true,contact:{nick_name:id}}),
+    historyReader:async()=>global.__historyMock.wcdb.wcdbService, historyReaderCount:()=>1,
     openMessageCursor: async (session, size, asc, start, end) => {
       const id = ++state.cursor
       state.cursors.set(id, [...state.rows].filter(r => r.create_time >= start && r.create_time <= end).sort((a, b) => a.create_time - b.create_time || a.local_id - b.local_id))
@@ -57,7 +60,13 @@ global.fetch = async (url, options) => {
   } else if (pathname.endsWith('/bindings/current')) data = { conflicts: [], binding: {} }
   else if (pathname.endsWith('/runs') && options.method === 'POST') { data = { id: 'run-1', status: 'running' }; runStatus = 'running' }
   else if (pathname.endsWith('/batches')) {
-    if (slow) { inFlight++; peak = Math.max(peak, inFlight); await new Promise(r => setTimeout(r, 15)); inFlight-- }
+    if (slow) {
+      inFlight++; peak=Math.max(peak,inFlight)
+      try {
+        if (waitForWave) await waitForWave(inFlight)
+        else await new Promise(r=>setTimeout(r,15))
+      } finally { inFlight-- }
+    }
     if (failUpload) throw new TypeError('fetch failed')
     if (receipts.has(body.batch_id)) data = receipts.get(body.batch_id)
     else {
@@ -68,12 +77,14 @@ global.fetch = async (url, options) => {
         serverRows.set(key, m)
         return { source_key: m.source_key, message_id: serverRows.size, outcome, media_status: 'none' }
       })
-      data = { inserted: items.filter(x => x.outcome === 'inserted').length, existing: items.filter(x => x.outcome === 'existing').length, failed: 0, items }
+      data = { batch_id:body.batch_id, inserted: items.filter(x => x.outcome === 'inserted').length, existing: items.filter(x => x.outcome === 'existing').length, failed: 0, items }
       receipts.set(body.batch_id, data)
     }
   } else if (pathname.endsWith('/reconcile')) {
     const missing = body.source_keys.filter(k => !serverRows.has(body.session_wxid + ':' + k))
-    data = { expected: body.source_keys.length, matched: body.source_keys.length - missing.length, missing }
+    const hash=s=>require('node:crypto').createHash('sha256').update(s).digest('hex')
+    data = { expected: body.source_keys.length, matched: body.source_keys.length - missing.length, missing,
+      source_digest:hash([...new Set(body.source_keys)].map(k=>hash(body.session_wxid+'\0'+k)).sort().join('\n')) }
   } else if (options.method === 'PATCH') {
     runStatus = body.action === 'finish' ? 'completed' : body.action === 'pause' ? 'paused' : 'running'
     data = { status: runStatus }
@@ -109,7 +120,7 @@ async function settle(service) {
     poolModule._compile(built.outputFiles[0].text,'adaptive-limit-test.cjs')
     const {AdaptiveLimit,runPool} = poolModule.exports
     const regulator = new AdaptiveLimit()
-    assert.equal(regulator.limit,9)
+    assert.equal(regulator.limit,16)
     for(let i=0;i<10;i++)regulator.sample('high')
     assert.equal(regulator.limit,6)
     for(let i=0;i<35;i++)regulator.sample('low')
@@ -118,10 +129,10 @@ async function settle(service) {
     const queued=runPool(Array.from({length:32},(_,i)=>i),async i=>{
       seen.add(i); await new Promise(resolve=>gates.push(resolve))
     },()=>true,adaptive,(limit,active)=>peakLimits.push([limit,active]),()=> 'high',2)
-    await new Promise(r=>setTimeout(r,40))
-    assert.equal(adaptive.limit,6);assert.equal(gates.length,9)
-    gates.splice(0,3).forEach(r=>r());await new Promise(r=>setTimeout(r,4))
-    assert.equal(seen.size,9,'no replacements while above or at reduced limit')
+    for(let wait=0;adaptive.limit>6 && wait<100;wait++) await new Promise(r=>setTimeout(r,10))
+    assert.equal(adaptive.limit,6);assert.equal(gates.length,16)
+    gates.splice(0,10).forEach(r=>r());await new Promise(r=>setTimeout(r,4))
+    assert.equal(seen.size,16,'no replacements while above or at reduced limit')
     while(seen.size<32 || gates.length){ gates.splice(0).forEach(r=>r());await new Promise(r=>setTimeout(r,1)) }
     await queued; assert.equal(seen.size,32)
     const { HistorySyncService } = await load()
@@ -184,17 +195,26 @@ async function settle(service) {
     const before = uploads
     const preview = await restarted.preview(scoped)
     assert.equal(preview.length,4); assert(preview.every(p => p.total===1)); assert.equal(uploads,before)
+    const fourSessions=global.__historyMock.chat.chatService.getSessions
+    const peers16=Array.from({length:16},(_,i)=>'concurrent-'+i)
+    global.__historyMock.chat.chatService.getSessions=async()=>({success:true,sessions:peers16.map(username=>({username,displayName:username}))})
+    let liftWave
+    const wave=new Promise(resolve=>{liftWave=resolve})
+    const waveTimeout=setTimeout(()=>liftWave(),1000)
+    waitForWave=async n=>{if(n===16)liftWave();await wave}
     slow=true; failUpload=true
     await restarted.start(scoped); await settle(restarted)
-    assert.equal(peak,4)
-    assert.equal(fs.readdirSync(path.join(dir,'history-sync')).filter(f=>f.startsWith('batch-')).length,4)
+    clearTimeout(waveTimeout);waitForWave=null
+    assert.equal(peak,16)
+    assert.equal(fs.readdirSync(path.join(dir,'history-sync')).filter(f=>f.startsWith('batch-')).length,16)
     failUpload=false
     const recovered = new HistorySyncService(); recovered.status(); await recovered.resume(); await settle(recovered)
     assert.equal(recovered.status().progressPhase,'done')
     assert(recovered.status().sessionProgress.every(p => p.total===1 && p.processed===1 && p.phase==='done'))
-    assert.equal([...serverRows.values()].filter(m=>m.local_id==='21').length,4)
+    assert.equal([...serverRows.values()].filter(m=>m.local_id==='21').length,16)
     assert(!fs.readdirSync(path.join(dir,'history-sync')).some(f=>f.startsWith('batch-')))
     await recovered.pause()
+    global.__historyMock.chat.chatService.getSessions=fourSessions
     const wc = global.__historyMock.wcdb.wcdbService
     wc.getSessionMessageTypeStats = async id => ({success:true,data:{type_counts:id === 'p3' ? {1:5} : {1:5,43:1},total_messages:id === 'p3' ? 5 : 6}})
     const open = wc.openMessageCursor, fetch = wc.fetchMessageBatch
@@ -202,7 +222,7 @@ async function settle(service) {
     wc.openMessageCursor = async (...args) => {
       assert.deepEqual(args[5],[43])
       const cursor = await open(...args)
-      state.cursors.set(cursor.cursor,state.cursors.get(cursor.cursor).filter(r=>r.local_type===43))
+      state.cursors.set(cursor.cursor,state.cursors.get(cursor.cursor).filter(r=>args[0]!=='p3' && r.local_type===43))
       if (args[0]==='p1') broken.add(cursor.cursor)
       return cursor
     }
@@ -240,7 +260,7 @@ async function settle(service) {
     wc.openMessageCursor=async (id,size,asc,start,end)=>{
       const cursor=++state.cursor
       if (!blocked) recoveredOpens.push([id,start])
-      state.cursors.set(cursor,{id,rows:(id===peerA?[row(800,same)]:[row(810,same-2),row(811,same),row(812,same),row(813,same),row(814,same+1)]).filter(r=>r.create_time>=start && r.create_time<=end)})
+      state.cursors.set(cursor,{id,rows:(id===peerA?[row(800,same)]:[row(810,same-2),row(811,same),row(812,same),row(813,same),row(814,same+1)].map(r=>({...r,message_content:'x'.repeat(340000)}))).filter(r=>r.create_time>=start && r.create_time<=end)})
       return {success:true,cursor}
     }
     wc.fetchMessageBatch=async cursor=>{
@@ -251,7 +271,10 @@ async function settle(service) {
     global.fetch=async(url,opts)=>{
       if(new URL(url).pathname.endsWith('/batches')){
         const batch=JSON.parse(opts.body)
-        if(batch.session.wxid===peerB && blocked && batch.messages[0].local_id==='812')throw Error('interrupted')
+        if(batch.session.wxid===peerB && blocked && batch.messages[0].local_id==='812'){
+          await beforeFetch(url,opts) // Server committed both rows; response never reached this client.
+          throw Error('receipt lost after commit')
+        }
         if(!blocked)sent.push(...batch.messages.map(m=>m.local_id))
       }
       return beforeFetch(url,opts)
@@ -263,7 +286,7 @@ async function settle(service) {
     const continued=new HistorySyncService(); continued.status(); await continued.resume(); await settle(continued)
     assert.equal(continued.status().status,'completed')
     assert.deepEqual(recoveredOpens,[[peerB,same]])
-    assert.deepEqual(sent,['812','813','814'])
+    assert.deepEqual(sent,['814'],'lost receipt must not retransmit committed message bodies')
     assert.equal(continued.status().completedSessions,2)
     assert.equal(continued.status().sessionProgress.find(p=>p.id===peerB).processed,5)
     const getList = global.__historyMock.chat.chatService
@@ -280,6 +303,94 @@ async function settle(service) {
     assert.deepEqual((await nextApp.preview(bounded)).map(r=>r.id),bounded.sessions)
     await assert.rejects(()=>nextApp.start({...bounded,sessions:[]}),/范围/)
     await assert.rejects(()=>nextApp.preview({...bounded,ordinalRange:{...bounded.ordinalRange,owner:'wrong'}}),/账号/)
+    // 5.0.1 lost the earlier pass rows. Its original binding/dataset and server ledger survive.
+    const file=path.join(dir,'history-sync','state.json')
+    const old=JSON.parse(fs.readFileSync(file,'utf8'))
+    delete old.stateFormat;delete old.pass;delete old.legacyRecovery
+    old.status='running';old.active=true;old.dailyChecked=0;old.progressPhase='counting';old.pendingFinish=false
+    old.options={...options,sessions:[peerA,peerB],continuous:false,kinds:['text']}
+    old.sessionProgress=[{id:peerA,name:'short',group:false,phase:'done',total:1,processed:1,failed:0},
+      {id:peerB,name:'long',group:false,phase:'waiting',total:0,processed:0,failed:0}]
+    fs.writeFileSync(file,JSON.stringify(old))
+    const known814=[...serverRows.keys()].find(k=>k.startsWith(peerB+':') && k.endsWith(':814'))
+    assert(known814);serverRows.delete(known814)
+    const known813=[...serverRows.keys()].find(k=>k.startsWith(peerB+':') && k.endsWith(':813'))
+    assert(known813);serverRows.delete(known813)
+    // Boundary pages: all confirmed [810,811], mixed [812,813], all missing [814].
+    // Simulate a server-confirmed peer whose old local completion flag was overwritten.
+    old.sessionProgress[0].phase='waiting';old.sessionProgress[0].processed=0
+    fs.writeFileSync(file,JSON.stringify(old))
+    const hashProof=s=>require('node:crypto').createHash('sha256').update(s).digest('hex')
+    const knownA=[...serverRows.keys()].find(k=>k.startsWith(peerA+':') && k.endsWith(':800')).slice(peerA.length+1)
+    const proof=hashProof(hashProof(peerA+'\0'+knownA))
+    const previousFetch=global.fetch
+    global.fetch=async (url,opts)=>new URL(url).pathname.endsWith('/report') ?
+      new Response(JSON.stringify({data:{id:old.runId,partitions:[
+        {session_wxid:peerA,date:'2020-01-01',matched:1,unresolved:0,source_digest:proof,media:{none:1}},
+        {session_wxid:peerB,date:'2020-01-01',matched:5,unresolved:0,source_digest:'different',media:{none:5}}
+      ]}}),{status:200}) : previousFetch(url,opts)
+    wc.historyDayProof=async peer=>({success:true,days:[{date:'2020-01-01',count:peer===peerA?1:5,digest:peer===peerA?proof:'not-equal'}]})
+    const migrated=new HistorySyncService()
+    assert.equal(migrated.status().status,'paused')
+    assert.equal(migrated.state.datasetId,old.datasetId);assert.equal(migrated.state.runId,old.runId)
+    sent=[];recoveredOpens=[]
+    const legitimate=global.fetch
+    global.fetch=async(url,opts)=>new URL(url).pathname.endsWith('/reconcile') ?
+      new Response(JSON.stringify({data:{expected:2,matched:2,missing:[],source_digest:'wrong'}}),{status:200}) :
+      legitimate(url,opts)
+    await migrated.resume();await settle(migrated)
+    assert.equal(migrated.status().status,'offline');assert.deepEqual(sent,[])
+    global.fetch=legitimate
+    const recoveredAgain=new HistorySyncService();recoveredAgain.status()
+    recoveredOpens=[]
+    await recoveredAgain.resume();await settle(recoveredAgain)
+    assert.deepEqual(sent,['813','814']);assert(recoveredOpens.every(([id])=>id===peerB));assert.equal(recoveredAgain.status().legacyRecovery.restoredPeers,1)
+    assert.equal(recoveredAgain.status().legacyRecovery.checked,3);assert.equal(recoveredAgain.status().completedSessions,2)
+    assert.equal(new HistorySyncService().status().legacyRecovery.checked,3)
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'history-sync','state.pre-5.0.5.json'),'utf8')),old)
+    // The normal live path reads each session once and can coalesce multiple SQLite pages.
+    const bigPeer='coalesced-session'
+    let scanCursor = 0
+    wc.openMessageCursor=async()=>({success:true,cursor:++scanCursor})
+    wc.getSessionMessageTypeStats=async()=>{throw new Error('live transfer must not count first')}
+    let rawRows=Array.from({length:505}, (_,i)=>row(3000+i,same))
+    wc.fetchMessageBatch=async()=>({success:true,rows:rawRows.splice(0,100),hasMore:!!rawRows.length})
+    wc.closeMessageCursor=async()=>{}
+    const originalFetch=global.fetch
+    const pageSizes=[];let afterWriteLookups=0
+    global.fetch=async(url,opts)=>{
+      if(new URL(url).pathname.endsWith('/batches')){
+        const b=JSON.parse(opts.body)
+        if(b.session.wxid===bigPeer) pageSizes.push(b.messages.length)
+      } else if(new URL(url).pathname.endsWith('/reconcile')) afterWriteLookups++
+      return originalFetch(url,opts)
+    }
+    await recoveredAgain.start({...options,sessions:[bigPeer],kinds:['text'],continuous:false});await settle(recoveredAgain)
+    assert.deepEqual(pageSizes,[500,5]);assert.equal(afterWriteLookups,0)
+    assert.equal(scanCursor,1)
+    assert.equal(recoveredAgain.status().sessionProgress[0].processed,505)
+    assert.equal(recoveredAgain.status().activeUploads,0)
+    assert.equal(recoveredAgain.status().activeReaders,0)
+    // The server committed the row but its response contains a different source key.
+    // Do not credit it or discard the spool. Recovery verifies the source before trying any upload.
+    rawRows=[row(9991,same)]
+    const corruptPeer='invalid-receipt'
+    let badPosts=0
+    global.fetch=async(url,opts)=>{
+      const res=await originalFetch(url,opts)
+      if(!new URL(url).pathname.endsWith('/batches')) return res
+      badPosts++
+      const response=await res.json()
+      response.data.items[0].source_key='wrong'
+      return new Response(JSON.stringify(response),{status:200})
+    }
+    await recoveredAgain.start({...options,sessions:[corruptPeer],kinds:['text'],continuous:false});await settle(recoveredAgain)
+    assert.match(recoveredAgain.status().error,/回执不完整/)
+    assert.equal(recoveredAgain.status().inserted,0)
+    assert(recoveredAgain.pendingFiles().length===1)
+    await recoveredAgain.resume();await settle(recoveredAgain)
+    assert.equal(recoveredAgain.status().status,'completed')
+    assert.equal(badPosts,1)
     console.log('History sync tests passed: identity, both directions, replay, pause, account change, crash recovery, old-history reconciliation')
   } finally {
     global.fetch = oldFetch; global.__historyMock = oldMock

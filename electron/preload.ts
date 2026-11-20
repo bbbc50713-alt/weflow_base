@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.on('historySync:previewRow',listener)
       return () => ipcRenderer.removeListener('historySync:previewRow',listener)
     },
+    metrics: () => ipcRenderer.invoke('historySync:metrics'),
     review: () => ipcRenderer.invoke('historySync:review'),
     rescan: () => ipcRenderer.invoke('historySync:rescan'),
     report: () => ipcRenderer.invoke('historySync:report'),

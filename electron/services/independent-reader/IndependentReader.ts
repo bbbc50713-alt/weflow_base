@@ -1,7 +1,7 @@
 import { createHash } from 'crypto'
 import { existsSync, readdirSync, realpathSync, watch, type FSWatcher } from 'fs'
 import { basename, join, relative, resolve, sep } from 'path'
-import { SnapshotStore, quoteIdentifier as qi, type SqlRow } from './SqliteReader'
+import { SnapshotStore, quoteIdentifier as qi, type SqlRow, type SqliteReader } from './SqliteReader'
 
 type MessageTable = { path: string; name: string; columns: string[]; talkerColumn?: string; index: number }
 type Position = { time: number; seq: string; id: string; index: number }
@@ -56,6 +56,7 @@ export class IndependentReader {
       }
       if (!this.snapshots) return { success: false, error: this.lastError || '独立读取器尚未连接，请先在数据库设置中完成连接' }
       switch (type) {
+        case 'historyDayProof': return this.historyDayProof(p.peer,p.start,p.end,p.kinds)
         case 'getSessions': return { success: true, sessions: this.sessions() }
         case 'getSessionListSupplement': return {success:true, contacts:this.sessionListSupplement()}
         case 'getContactsCompact': return { success: true, contacts: this.contacts(p.usernames) }
@@ -242,11 +243,51 @@ export class IndependentReader {
     return { success: true, counts }
   }
 
+  private catalogBySnapshot = new WeakMap<SqliteReader, Map<string,string>>()
+  private messageCatalog(file:string) {
+    const db=this.db(file)
+    let catalog=this.catalogBySnapshot.get(db)
+    if (!catalog) {
+      catalog=new Map(this.tables(file).map(name=>[name.toLowerCase(),name]))
+      this.catalogBySnapshot.set(db,catalog)
+    }
+    return catalog
+  }
+
+  private historyDayProof(peer:string, begin:number, end:number, kinds:string[]) {
+    const days=new Map<string,string[]>()
+    const basic: Record<number,string>={1:'text',3:'image',34:'voice',43:'video',47:'emoji'}
+    for (const table of this.messageTables(peer)) {
+      const db=this.db(table.path), layout=this.layout(table)
+      const type=this.pickColumn(table.columns,['local_type','Type'])
+      if (!type) return {success:false}
+      const where=[qi(layout.time)+'>=?',qi(layout.time)+'<=?'], args:unknown[]=[begin,end]
+      if (table.talkerColumn) { where.push(qi(table.talkerColumn)+'=?');args.push(peer) }
+      const columns=[layout.id,layout.time,type].map(qi).join(',')
+      // Include all type-49 candidates when either file or other is selected. Ambiguity
+      // causes a conservative digest mismatch; it cannot hide an unconfirmed record.
+      const rows=db.query(`SELECT ${columns} FROM ${qi(table.name)} WHERE ${where.join(' AND ')}`,args,200000)
+      for (const r of rows) {
+        const base=Number(r[type])%4294967296
+        if (!kinds.includes(basic[base]||'other') && !(base===49 && kinds.includes('file'))) continue
+        const day=new Date(Number(r[layout.time])*1000).toISOString().slice(0,10)
+        const key=basename(table.path)+':'+table.name+':'+String(r[layout.id])
+        const hashes=days.get(day)||[]
+        hashes.push(createHash('sha256').update(peer+'\0'+key).digest('hex'))
+        days.set(day,hashes)
+      }
+    }
+    return {success:true,days:[...days].map(([date,hashes])=>({date,count:hashes.length,digest:createHash('sha256').update(hashes.sort().join('\n')).digest('hex')}))}
+  }
+
   private messageTables(session: string): MessageTable[] {
     const hash = createHash('md5').update(session).digest('hex')
     const found: MessageTable[] = []
     for (const file of this.files.filter(f => /^(?:message|msg)[_\d]*\.db$/i.test(basename(f)))) {
-      for (const name of this.tables(file)) {
+      const catalog=this.messageCatalog(file)
+      for (const alias of ['msg_'+hash,'msg','message']) {
+        const name=catalog.get(alias)
+        if (!name) continue
         if (name.toLowerCase() === `msg_${hash}`) found.push({ path: file, name, columns: this.columns(file, name), index: found.length })
         else if (['msg', 'message'].includes(name.toLowerCase())) {
           const columns = this.columns(file, name)

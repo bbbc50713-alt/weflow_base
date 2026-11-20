@@ -13,7 +13,7 @@ export function memoryPressure(): Pressure {
 }
 
 export class AdaptiveLimit {
-  limit = 9
+  limit = 16
   private good = 0
   sample(pressure: Pressure) {
     this.good = pressure === 'low' ? this.good + 1 : 0

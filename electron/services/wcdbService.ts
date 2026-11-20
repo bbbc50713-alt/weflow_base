@@ -1,6 +1,7 @@
 import { Worker } from 'worker_threads'
 import { join } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, promises as disk } from 'fs'
+import { freemem, totalmem } from 'os'
 
 /**
  * Worker 消息接口
@@ -38,7 +39,93 @@ export class WcdbService {
   private monitorListener: ((type: string, json: string) => void) | null = null
   private restartingWorker = false
 
-  constructor() {}
+  private connection?: { dir:string; key:string }
+  private opening = 0
+  private helpers = new Map<number,{ service: WcdbService; ready: Promise<boolean> }>()
+  private readTurn = 0
+  private helperRetryAt = 0
+  private helperDraining: Promise<void> = Promise.resolve()
+  private helperStartup: Promise<void> = Promise.resolve()
+  private diskCapacity?: {at:number; lanes:number}
+
+  constructor(private readonly secondary = false) {}
+
+  private retireHistoryReader() {
+    const retired = [...this.helpers.values()]
+    this.helpers.clear()
+    this.diskCapacity = undefined
+    this.readTurn = 0
+    this.helperRetryAt = 0
+    if (retired.length) {
+      const previous = this.helperDraining
+      this.helperDraining = Promise.allSettled([previous,...retired.map(async helper=>{
+        await helper.ready.catch(()=>false)
+        if (helper.service.worker) await helper.service.shutdown()
+      })]).then(()=>{})
+    }
+  }
+
+  historyReaderCount(): number {
+    if (!this.worker || !this.connection) return 0
+    return 1 + [...this.helpers.values()].filter(h=>h.service.connection && h.service.worker).length
+  }
+
+  private async readerCapacity(accountDir:string, root:string) {
+    if (this.diskCapacity && Date.now()-this.diskCapacity.at<60000) return this.diskCapacity.lanes
+    const available = await disk.statfs(root)
+    let bytes = 0
+    const dirs = [join(accountDir,'db_storage')]
+    while (dirs.length) {
+      const dir=dirs.pop()!
+      for (const entry of await disk.readdir(dir,{withFileTypes:true})) {
+        if (entry.isSymbolicLink()) continue
+        const file=join(dir,entry.name)
+        if (entry.isDirectory()) dirs.push(file)
+        else if (/\.db(?:-wal)?$/i.test(entry.name)) bytes+=(await disk.stat(file)).size
+      }
+    }
+    // Bound the worst-case private copies across all lanes. Underestimate spare space deliberately.
+    const lanes=Math.max(1,Math.min(16, Math.floor((available.bavail*available.bsize - 4*1024**3)/Math.max(bytes,1))))
+    this.diskCapacity={at:Date.now(),lanes}
+    return lanes
+  }
+
+  // Cursor IDs and sqlite connections stay local to the selected worker.
+  async historyReader(): Promise<WcdbService> {
+    const account=this.connection, root=this.userDataPath, resources=this.resourcesPath
+    if (this.secondary || !account || !root || !resources || process.platform!=='win32' || process.arch!=='x64' ||
+        freemem()<Math.max(1024**3,totalmem()*0.12)) return this
+    const lane=this.readTurn++ % (this.diskCapacity && Date.now()-this.diskCapacity.at<60000 ? this.diskCapacity.lanes : 16)
+    if (!lane) return this
+    let helper=this.helpers.get(lane)
+    if (!helper) {
+      if (Date.now()<this.helperRetryAt) return this
+      const service=new WcdbService(true)
+      const drain=this.helperDraining
+      // Stage startup to avoid simultaneous DLL loads and multi-GB snapshot copies at login.
+      const ready=this.helperStartup.then(async()=>{
+        await drain
+        if (this.connection!==account || lane >= await this.readerCapacity(account.dir,root) ||
+            freemem()<Math.max(1024**3,totalmem()*0.12)) return false
+        service.setPaths(resources,join(root,'history-read-worker-'+lane))
+        const ok=await service.open(account.dir,account.key)
+        if (ok) service.setMonitor(()=>{})
+        return ok
+      }).catch(()=>false)
+      this.helperStartup=ready.then(()=>{})
+      helper={service,ready}
+      this.helpers.set(lane,helper)
+    }
+    const ok=await helper.ready
+    if(this.connection!==account) throw new Error('本地微信连接已更换，请按原范围继续')
+    if(ok && helper.service.worker && helper.service.connection) return helper.service
+    if(this.helpers.get(lane)===helper) {
+      this.helpers.delete(lane)
+      if (helper.service.worker) await helper.service.shutdown()
+      if (!this.diskCapacity || lane<this.diskCapacity.lanes) this.helperRetryAt=Date.now()+60000
+    }
+    return this
+  }
 
   /**
    * 初始化 Worker 线程
@@ -85,7 +172,11 @@ export class WcdbService {
         this.rejectAllPending(`Worker 错误: ${errorMsg}`)
       })
 
+      const startedWorker=this.worker
       this.worker.on('exit', (code) => {
+        if (this.worker !== startedWorker) return
+        this.connection=undefined
+        this.retireHistoryReader()
         // Worker 退出，需要 reject 所有 pending promises
         if (code !== 0) {
           console.error('WCDB Worker 异常退出，退出码:', code)
@@ -145,7 +236,7 @@ export class WcdbService {
   }
 
   private getWorkerCallTimeoutMs(type: string): number {
-    if (['open','testConnection','isConnected','getSessions','getSessionListSupplement','getContactsCompact','getDisplayNames','getAvatarUrls','getSessionMessageTypeStats','openMessageCursor','fetchMessageBatch','closeMessageCursor'].includes(type))
+    if (['open','testConnection','historyDayProof','isConnected','getSessions','getSessionListSupplement','getContactsCompact','getDisplayNames','getAvatarUrls','getSessionMessageTypeStats','openMessageCursor','fetchMessageBatch','closeMessageCursor'].includes(type))
       return LARGE_ACCOUNT_READ_TIMEOUT_MS
     if ([
       'isConnected',
@@ -223,6 +314,7 @@ export class WcdbService {
    * 设置资源路径
    */
   setPaths(resourcesPath: string, userDataPath: string): void {
+    if (this.resourcesPath!==resourcesPath || this.userDataPath!==userDataPath) this.retireHistoryReader()
     this.resourcesPath = resourcesPath
     this.userDataPath = userDataPath
     this.callWorker('setPaths', { resourcesPath, userDataPath }).catch(() => { })
@@ -268,7 +360,15 @@ export class WcdbService {
    * @param hexKey 解密密钥
    */
   async open(accountDir: string, hexKey: string): Promise<boolean> {
-    return this.callWorker('open', { accountDir, hexKey })
+    const generation=++this.opening
+    if (this.connection?.dir !== accountDir || this.connection.key !== hexKey) {
+      this.connection=undefined
+      this.retireHistoryReader()
+    }
+    const ok=await this.callWorker<boolean>('open', { accountDir, hexKey })
+    if (ok && this.opening === generation) this.connection ??= {dir:accountDir,key:hexKey}
+    if (!ok && this.opening === generation) { this.connection=undefined; this.retireHistoryReader() }
+    return ok
   }
 
   async getLastInitError(): Promise<string | null> {
@@ -279,6 +379,10 @@ export class WcdbService {
    * 关闭数据库连接
    */
   async close(): Promise<void> {
+    this.opening++
+    this.connection=undefined
+    this.retireHistoryReader()
+    await this.helperDraining
     return this.callWorker('close')
   }
 
@@ -288,8 +392,9 @@ export class WcdbService {
   async shutdown(): Promise<void> {
     try { await this.close() } catch {}
     if (this.worker) {
-      try { await this.worker.terminate() } catch {}
+      const worker=this.worker
       this.worker = null
+      try { await worker.terminate() } catch {}
     }
   }
 
@@ -607,6 +712,10 @@ export class WcdbService {
   /**
    * 打开消息游标
    */
+  async historyDayProof(peer:string,start:number,end:number,kinds:string[]): Promise<{success:boolean;days?:Array<{date:string;count:number;digest:string}>}> {
+    return this.callWorker('historyDayProof',{peer,start,end,kinds})
+  }
+
   async openMessageCursor(sessionId: string, batchSize: number, ascending: boolean, beginTimestamp: number, endTimestamp: number, baseTypes?: number[]): Promise<{ success: boolean; cursor?: number; error?: string }> {
     return this.callWorker('openMessageCursor', { sessionId, batchSize, ascending, beginTimestamp, endTimestamp, baseTypes })
   }

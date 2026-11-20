@@ -69,6 +69,10 @@ try{
  assert.equal((await core.dispatch('getSessions')).sessions.length,2)
  assert.equal((await core.dispatch('getContact',{username:'wxid_friend'})).contact.remark,'备注')
  assert.equal((await core.dispatch('getMessageCount',{sessionId:'wxid_friend'})).count,3)
+ const dayProof=await core.dispatch('historyDayProof',{peer:'wxid_friend',start:100,end:100,kinds:['text','other']})
+ const sha=v=>crypto.createHash('sha256').update(v).digest('hex')
+ const expectKeys=[['message_0.db',1],['message_0.db',2],['message_1.db',1]].map(([shard,id])=>sha('wxid_friend'+'\0'+shard+':'+friendTable+':'+id)).sort()
+ assert.deepEqual(dayProof.days,[{date:'1970-01-01',count:3,digest:sha(expectKeys.join('\n'))}])
  const cursor=(await core.dispatch('openMessageCursor',{sessionId:'wxid_friend',batchSize:1,ascending:true})).cursor
  const all=[];for(;;){const p=await core.dispatch('fetchMessageBatch',{cursor});assert.equal(p.success,true,p.error);all.push(...p.rows);if(!p.hasMore)break}
  assert.deepEqual(all.map(r=>r.server_id),['9223372036854775801','9223372036854775804','9223372036854775802'])
@@ -87,6 +91,37 @@ try{
  await core.dispatch('close')
  assert.deepEqual(hashes(),original,'account databases modified by reader')
 
+ if(process.argv.includes('--parallel')) {
+   const {WcdbService}=load('electron/services/wcdbService.ts')
+   const primary=new WcdbService()
+   const env=process.env.NODE_ENV;process.env.NODE_ENV='development'
+   const originalFree=os.freemem
+   const userData=path.join(temp,'two-worker-user')
+   fs.mkdirSync(userData,{recursive:true})
+   try {
+     primary.setPaths(path.join(root,'resources'),userData)
+     assert(await primary.open(acct,key))
+     os.freemem=()=>os.totalmem() // deterministic admission in this synthetic fixture
+     const lanes=await Promise.all(Array.from({length:16},()=>primary.historyReader()))
+     const [one,two]=lanes
+     assert.equal(new Set(lanes.map(s=>s.worker.threadId)).size,16)
+     assert.notEqual(one.worker.threadId,two.worker.threadId)
+     const lane=async (service,peer)=>{
+       const opened=await service.openMessageCursor(peer,2,true,0,0)
+       assert(opened.success,opened.error)
+       try {const batch=await service.fetchMessageBatch(opened.cursor);assert(batch.success,batch.error);return batch.rows.map(r=>r.server_id)}
+       finally {await service.closeMessageCursor(opened.cursor)}
+     }
+     const results=await Promise.all(lanes.map((s,i)=>lane(s,i%2?'room@chatroom':'wxid_friend')))
+     const result=results.slice(0,2); assert(results.every((r,i)=>JSON.stringify(r)===JSON.stringify(result[i%2])))
+     assert.deepEqual(result,[['9223372036854775801','9223372036854775804'],['18446744073709551600']])
+     assert.deepEqual(hashes(),original)
+     os.freemem=()=>0
+     assert.equal(await primary.historyReader(),primary)
+     await primary.close();assert(lanes.slice(1).every(s=>s.worker===null))
+     console.log('PARALLEL_READER_OK 16 distinct reader threads, private snapshots, bound cursors, memory fallback, teardown')
+   }finally{os.freemem=originalFree;await primary.shutdown();if(env===undefined)delete process.env.NODE_ENV;else process.env.NODE_ENV=env}
+ }
  if(process.argv.includes('--large')) {
    for (const [name,sql] of [
      ['session.db',"ALTER TABLE SessionTable ADD COLUMN packed_info_data BLOB; WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<12000) INSERT INTO SessionTable SELECT 'test_'||i,100,100,'hello',zeroblob(2048) FROM n"],

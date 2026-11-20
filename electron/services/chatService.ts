@@ -3975,7 +3975,7 @@ class ChatService {
     return [lowerRaw]
   }
 
-  private resolveMessageIsSend(rawIsSend: number | null, senderUsername?: string | null): {
+  private resolveMessageIsSend(rawIsSend: number | null, senderUsername?: string | null, owner?: string | null): {
     isSend: number | null
     selfMatched: boolean
     correctedBySelfIdentity: boolean
@@ -3990,7 +3990,7 @@ class ChatService {
       }
     }
 
-    const myWxid = String(this.configService.getMyWxidCleaned() || '').trim()
+    const myWxid = String(owner ?? this.configService.getMyWxidCleaned() ?? '').trim()
     const selfKeys = this.buildIdentityKeys(myWxid)
     if (selfKeys.length === 0) {
       return {
@@ -5117,8 +5117,8 @@ class ChatService {
   /**
    * HTTP API 复用消息解析逻辑，确保和应用内展示一致。
    */
-  mapRowsToMessagesForApi(rows: Record<string, any>[], sessionId: string = ''): Message[] {
-    return this.mapRowsToMessages(rows, sessionId)
+  mapRowsToMessagesForApi(rows: Record<string, any>[], sessionId: string = '', owner?: string): Message[] {
+    return this.mapRowsToMessages(rows, sessionId, owner)
   }
 
   mapRowsToMessagesLiteForApi(rows: Record<string, any>[]): Message[] {
@@ -5172,8 +5172,7 @@ class ChatService {
     return messages
   }
 
-  private mapRowsToMessages(rows: Record<string, any>[], sessionId: string): Message[] {
-    const myWxid = this.configService.getMyWxidCleaned()
+  private mapRowsToMessages(rows: Record<string, any>[], sessionId: string, myWxid = this.configService.getMyWxidCleaned()): Message[] {
 
     const messages: Message[] = []
     for (const row of rows) {
@@ -5188,7 +5187,7 @@ class ChatService {
       const senderUsername = row.sender_username
         || this.extractSenderUsernameFromContent(content)
         || null
-      const { isSend } = this.resolveMessageIsSend(parsedRawIsSend, senderUsername)
+      const { isSend } = this.resolveMessageIsSend(parsedRawIsSend, senderUsername, myWxid)
       const createTime = this.getRowTimestampSeconds(row, ['create_time', 'createTime', 'msg_time', 'msgTime', 'time'], 0)
 
       if (senderUsername && !myWxid) {

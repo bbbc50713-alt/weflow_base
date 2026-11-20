@@ -19,6 +19,7 @@ export interface HistoryBinding {
 }
 
 export interface SessionProgress {
+  singlePass?: boolean
   id: string
   name: string
   group: boolean
@@ -31,6 +32,11 @@ export interface SessionProgress {
   existing?: number
 }
 export interface HistoryStatus {
+  legacyRecovery?: {runId:string;checked:number;previousScanned:number; reportConfirmed?:number; reportPending?:number; reportPeers?:number; restoredPeers?:number; restoredMessages?:number; checkingReport?:boolean; planned?:number; examined?:number}
+  readerCount?: number
+  activeReaders?: number
+  activeChecks?: number
+  activeUploads?: number
   concurrencyLimit?: number
   activeSessions?: number
   sessionProgress?: SessionProgress[]
@@ -85,7 +91,18 @@ export interface WechatHistoryMessageV1 {
   media_kind: 'image' | 'voice' | 'video' | 'file' | 'emoji' | null
 }
 
+export interface ServerTransferMetrics {
+  run_id:string; queue_enabled:boolean; accepted_batches:number; committed_batches:number
+  queued_batches:number; processing:number; failed_batches:number; worker_limit:number|null; oldest_seconds:number
+  inserted:number; matched:number; issues:number; processed_per_minute:number; inserted_per_minute:number; sampled_at:string
+}
+export interface TransferMetrics {
+  readMs?:number|null; batchMs?:number|null; checkMs?:number|null
+  counts?: {inserted?:number;existing?:number;failed?:number}|null
+  runId:string; clientPending:number; clientAcknowledged:number; bytesPerSecond:number; checkBytesPerSecond:number; checkRequests:number; server:ServerTransferMetrics|null
+}
 export interface HistorySyncApi {
+  metrics(): Promise<TransferMetrics>
   status(): Promise<HistoryStatus>
   sessions(): Promise<Array<{ id: string; name: string; group: boolean; ordinal?:number }>>
   bind(origin: string, code: string): Promise<HistoryStatus>

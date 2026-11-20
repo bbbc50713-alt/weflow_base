@@ -1922,6 +1922,7 @@ function registerIpcHandlers() {
     historySyncService.preview(options,(row,total) => {
       if (requestId && !event.sender.isDestroyed()) event.sender.send('historySync:previewRow',{requestId,row,total})
     }))
+  ipcMain.handle('historySync:metrics', () => historySyncService.metrics())
   ipcMain.handle('historySync:review', () => historySyncService.review())
   ipcMain.handle('historySync:rescan', () => historySyncService.rescan())
   ipcMain.handle('historySync:report', () => historySyncService.report())

@@ -17,6 +17,12 @@ function ScopeProgress({ rows, counting, limitTarget, activeSessions, preview = 
   const total = visible.reduce((n, r) => n + r.total, 0)
   const done = visible.reduce((n, r) => n + r.processed, 0)
   const failed = visible.reduce((n, r) => n + r.failed, 0)
+  const isArchived = (r: SessionProgress) => r.phase==='done' && r.failed===0 && r.total>0 && r.processed===r.total
+  const empty = rows.filter(r=>r.phase==='skipped').length
+  const archived = rows.filter(isArchived).length
+  const accounted = archived + empty
+  const boundary = rows.findIndex(r=>!isArchived(r) && r.phase!=='skipped')
+  const prefix = boundary<0 ? rows.length : boundary
   const counted = rows.filter(r => r.phase !== 'counting' && r.phase !== 'waiting').length
   const countingNow = counting && counted < rows.length
   const queueLabel = {waiting:'排队中',counting:'正在统计',queued:'等待提交',syncing:'读取 / 提交中',done:'已处理',failed:'失败 / 待处理',skipped:'没有符合条件的消息'}
@@ -25,16 +31,21 @@ function ScopeProgress({ rows, counting, limitTarget, activeSessions, preview = 
   const groups = visible.filter(r => r.group).length
   return <section className="sync-range-progress" aria-label={preview ? '范围预览' : '历史消息进度'}>
     <strong>{preview ? '范围预览（尚未上传）' : countingNow ? '会话任务队列 · 正在统计' : '会话任务队列 · 消息处理进度'}</strong>
+    {!preview && <div aria-label="按会话计算的归档进度">
+      <p><strong>已核实完成 {accounted.toLocaleString()} / {rows.length.toLocaleString()} 个会话（{rows.length ? (100*accounted/rows.length).toFixed(1) : '0.0'}%）</strong></p>
+      <progress aria-label="已核实会话占比" max={rows.length || 1} value={accounted}/>
+      <small>有消息且全部确认 {archived} / {rows.length}（{rows.length ? (100*archived/rows.length).toFixed(1) : '0.0'}%），范围内无消息 {empty} 个。按本任务名单，从头连续完成 {prefix} 个。待核对和部分完成的会话另计。</small>
+    </div>}
     {!preview && <span className="sync-percent">{Math.min(100, Math.floor(100 * barValue / barMax))}%</span>}
-    {countingNow ? <p>已统计 {counted} / {rows.length} 个会话</p> :
+    {countingNow ? <p>已开始处理 {counted} / {rows.length} 个会话</p> :
       <p>{visible.length - groups} 位联系人、{groups} 个群聊，共 {total} 条符合条件的消息。</p>}
     {!preview && <><progress aria-label={countingNow ? '会话统计进度' : '总消息处理进度'} max={barMax} value={barValue}/>
       {!countingNow && <small>已处理 {done} / {total} 条，其中待核对 {failed} 条。附件单独统计。</small>}</>}
-    {!preview && <p className="sync-note">自适应并发：当前处理 {activeSessions ?? 0} 个会话，上限 {limitTarget ?? 9} 个（6～16）。进度自动保存；断线后按原范围继续，同一轮已完成的会话不会重扫。附件另计。</p>}
+    {!preview && <p className="sync-note">自适应并发：当前处理 {activeSessions ?? 0} 个会话，上限 {limitTarget ?? 16} 个（6～16）。进度自动保存；断线后按原范围继续，同一轮已完成的会话不会重扫。附件另计。</p>}
     <div className="sync-contact-progress" tabIndex={0} aria-label="各会话消息数和处理进度">
       {rows.slice(0,limit).map(r => <div key={r.id}><span>{r.name} <small>{r.group ? '群聊' : '私聊'}</small></span>
-        {!preview && r.total > 0 && <progress aria-label={r.name + '处理进度'} max={Math.max(1,r.total)} value={r.processed}/>}
-        <span>{preview || countingNow ? r.total + ' 条' : r.processed + ' / ' + r.total}
+        {!preview && !r.singlePass && r.total > 0 && <progress aria-label={r.name + '处理进度'} max={Math.max(1,r.total)} value={r.processed}/>}
+        <span>{r.singlePass ? '边读边传 · 已处理 '+r.processed+' 条' : preview || countingNow ? r.total + ' 条' : r.processed + ' / ' + r.total}
           {!preview && ' · ' + (r.phase === 'done' && !r.failed && r.processed > 0 ? '消息处理成功' : queueLabel[r.phase])}
           {!preview && r.processed > 0 && (' · 已确认 ' + Math.max(0, r.processed - r.failed))}
           {r.issue && <small className="queue-error"> · {r.issue}</small>}
@@ -68,6 +79,24 @@ export default function HistorySyncPage() {
   const [search, setSearch] = useState('')
   const [review, setReview] = useState<Awaited<ReturnType<typeof window.electronAPI.historySync.review>> | null>(null)
   const [busy, setBusy] = useState(false)
+  const [transfer,setTransfer] = useState<Awaited<ReturnType<typeof window.electronAPI.historySync.metrics>>|null>(null)
+  const currentRun = status?.runId
+  const syncState = status?.status
+  useEffect(() => {
+    setTransfer(null)
+    if (!currentRun || !window.electronAPI.historySync.metrics) return
+    let cancelled=false
+    let timer:ReturnType<typeof setTimeout>|undefined
+    async function refresh() {
+      try {
+        const sample=await window.electronAPI.historySync.metrics()
+        if (!cancelled && sample.runId===currentRun) setTransfer(sample)
+      } catch { if (!cancelled) setTransfer(null) }
+      if (!cancelled && (syncState==='running' || syncState==='offline')) timer=setTimeout(refresh,10000)
+    }
+    void refresh()
+    return ()=>{cancelled=true;clearTimeout(timer)}
+  },[currentRun,syncState,status?.accountWxid])
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -251,7 +280,7 @@ export default function HistorySyncPage() {
       }}>查看 / 刷新会话对账</button>
       <button disabled={busy || !isDbConnected || status?.status !== 'paused'} onClick={() => void action(() => window.electronAPI.historySync.rescan(), '已开始重新核对原任务范围。')}>迁移后重新核对并补传</button>
       <p className="sync-note">手机迁移完成后，先暂停，再重新核对原任务日期范围。持续补齐会重读近期消息，累计读取次数不代表唯一消息数。</p>
-      {review && review.id === status?.runId && <details open><summary>中台已收到的记录（按会话和 UTC 日期去重）</summary>
+      {review && review.id === status?.runId && <details open><summary>中台原任务对账：已确认 {review.partitions.reduce((n,p)=>n+p.matched,0).toLocaleString()} 条，待核对 {review.partitions.reduce((n,p)=>n+p.unresolved,0).toLocaleString()} 条（按来源去重）</summary>
         <div style={{maxHeight: 360, overflow: 'auto'}}><table><thead><tr>{['会话','日期','记录','已对应','待核对','附件已传 / 缺失'].map(x => <th key={x}>{x}</th>)}</tr></thead><tbody>
         {review.partitions.map(p => <tr key={p.session_wxid + ':' + p.date}><td>{sessions.find(s => s.id === p.session_wxid)?.name || p.session_wxid}</td><td>{p.date === 'unknown' ? '日期未记录' : p.date}</td>
         <td>{p.source_records}</td><td>{p.matched}</td><td>{p.unresolved}</td><td>{p.media.uploaded || 0} / {p.media.missing || 0}</td></tr>)}</tbody></table></div></details>}
@@ -265,9 +294,31 @@ export default function HistorySyncPage() {
         return <div className="sync-range-progress"><strong>第 {status.options.ordinalRange.first}～{status.options.ordinalRange.last} 位 · 本段会话进度</strong>
           <progress aria-label="本段会话进度" max={total || 1} value={done}/><small>已处理 {done} / {total}，本段剩余 {total-done} 个会话。名单中位于本段之后的还有 {sessions.filter(s => (s.ordinal || 0) > status.options.ordinalRange!.last).length} 个。待核对消息另计。</small></div>
       })()}
+      {status?.legacyRecovery?.reportConfirmed !== undefined && <div className="sync-range-progress" role="status">
+        <strong>{status.legacyRecovery.checkingReport ? '正在从中台重建会话断点' : '已读取原任务的中台对账报告'}</strong>
+        <p>中台已确认来源 {status.legacyRecovery.reportConfirmed.toLocaleString()} 条，待核对 {status.legacyRecovery.reportPending} 条，涉及 {status.legacyRecovery.reportPeers} 个会话。</p>
+        <p>本次比对已检查 {status.legacyRecovery.examined} / {status.legacyRecovery.planned} 个候选会话；已按摘要恢复 {status.legacyRecovery.restoredPeers || 0} 个完整会话，跳过 {status.legacyRecovery.restoredMessages || 0} 条正文。</p>
+      </div>}
+      {status?.readerCount !== undefined && <p className="sync-note">读取线程 {status.readerCount} / 16，查询中 {status.activeReaders ?? 0} · 对账请求 {status.activeChecks ?? 0} · 正文或附件提交 {status.activeUploads ?? 0}</p>}
       {status?.sessionProgress && <ScopeProgress limitTarget={status.concurrencyLimit} activeSessions={status.activeSessions} rows={status.sessionProgress} counting={status.progressPhase === 'counting'}/>}
+      {status?.legacyRecovery?.runId && status.legacyRecovery.runId===currentRun && <section className="sync-range-progress" role="status">
+        <strong>已接入旧版原任务</strong><p>旧版累计已读取 {status.legacyRecovery.previousScanned.toLocaleString()} 条次。逐条编号对账另跳过正文 {status.legacyRecovery.checked.toLocaleString()} 条。</p>
+        {status.sessionProgress && <p>当前本地记录共 {status.sessionProgress.length} 个会话，已完成或无匹配记录 {status.sessionProgress.filter(r=>r.phase==='done' || r.phase==='skipped').length} 个。待接续会话包括：{status.sessionProgress.filter(r=>r.phase!=='done' && r.phase!=='skipped').slice(0,3).map(r=>r.name).join('、') || '无'}。</p>}
+        <p>按原范围继续即可。已完成的会话沿用本机进度；没有精确断点的部分先核对来源编号，再补传缺失记录。</p>
+      </section>}
+      {currentRun && <section aria-label="上传与中台队列"><h3>上传与中台队列</h3>
+        {transfer?.runId===currentRun && transfer ? <>
+          <p>本机近 60 秒已获回执的正文和附件速率 <strong>{(transfer.bytesPerSecond/1024).toFixed(1)} KiB/s</strong> · 编号对账 {((transfer.checkBytesPerSecond || 0)/1024).toFixed(1)} KiB/s（{transfer.checkRequests || 0} 次/分钟） · 待确认 {transfer.clientPending} 批 · 已上传并对账 {transfer.clientAcknowledged.toLocaleString()} 条次</p>
+          {transfer.server ? <>
+            <p>中台累计接收 <strong>{transfer.server.accepted_batches.toLocaleString()} 批</strong> · 已消费 {transfer.server.committed_batches.toLocaleString()} 批 · 新增入库 <strong>{transfer.server.inserted.toLocaleString()} 条</strong></p>
+            <p>{transfer.server.queue_enabled ? `排队 ${transfer.server.queued_batches} 批 · 写入中 ${transfer.server.processing} / ${transfer.server.worker_limit} · 批次失败 ${transfer.server.failed_batches} · 最老未完成批次 ${transfer.server.oldest_seconds} 秒` : '本任务采用直接入库模式'}</p>
+            <p>最近 60 秒处理 {transfer.server.processed_per_minute} 条次，其中新增 {transfer.server.inserted_per_minute} 条 · 更新于 {new Date(transfer.server.sampled_at).toLocaleTimeString()}</p>
+          </> : <p role="status">{transfer.counts ? `中台原任务累计新增 ${(transfer.counts.inserted || 0).toLocaleString()} 条，已有匹配 ${(transfer.counts.existing || 0).toLocaleString()} 次，待处理 ${(transfer.counts.failed || 0).toLocaleString()} 次。` : '暂未取得中台原任务统计。'} 详细队列深度请在中台微信账号页查看。</p>}
+          <p>近一分钟典型耗时 · 数据库读取 {transfer.readMs == null ? '—' : transfer.readMs+' ms'} · 批次提交至回执 {transfer.batchMs == null ? '—' : transfer.batchMs+' ms'} · 编号对账 {transfer.checkMs == null ? '—' : transfer.checkMs+' ms'}</p>
+          <small>上传速度按本机最近一分钟成功返回的消息批次和附件请求体计算。只核对编号、在本地校验或等待回执时，此速度可为 0。</small>
+        </> : <p>等待读取统计…</p>}</section>}
       <div className="sync-metrics">{[
-        ['会话', `${status!.completedSessions} / ${status!.totalSessions}`], ['已读取', status!.scanned], ['新增消息', status!.inserted],
+        ['会话', `${status!.completedSessions} / ${status!.totalSessions}`], ['已读取', status!.scanned], ['本任务新增入库', (transfer?.runId===currentRun ? transfer?.server?.inserted ?? transfer?.counts?.inserted : undefined) ?? status!.inserted],
         ['累计匹配次数', status!.existing], ['需处理', status!.failed], ['附件已上传', status!.mediaUploaded], ['附件待处理', status!.mediaPending],
       ].map(([label, value]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}</div>
       {status?.currentSession && <p>当前会话：{status.currentSession}</p>}

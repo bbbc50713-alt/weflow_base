@@ -50,6 +50,8 @@ window.__testPromise=(async()=>{
  assert(sessionCalls===1,'connected sync should load sessions once')
  const running={...await window.electronAPI.historySync.status(),runId:'review-test',initialScanComplete:true,binding:{account_name:'测试微信'},status:'running',inserted:31}
  Object.assign(running,{progressPhase:'done',sessionProgress:[{id:'peer',name:'测试会话',group:false,total:31,processed:31,failed:0,phase:'done'}]})
+ window.electronAPI.historySync.metrics=async()=>({runId:running.runId,clientPending:2,clientAcknowledged:3,bytesPerSecond:2048,
+   server:{accepted_batches:12,committed_batches:9,queued_batches:2,processing:1,worker_limit:6,failed_batches:0,oldest_seconds:1,inserted:31,processed_per_minute:25,inserted_per_minute:10,sampled_at:'2026-11-20T00:00:00Z',queue_enabled:true}})
  const paused={...running,status:'paused'}
  window.electronAPI.historySync.preview=async(opts,requestId)=>{
    const row={id:'peer',name:'测试会话',group:false,total:31,processed:0,failed:0,phase:'done'}
@@ -64,6 +66,9 @@ window.__testPromise=(async()=>{
  assert(document.querySelector('progress[aria-label="总消息处理进度"]').value===31,'overall message progress missing')
  assert(document.querySelector('progress[aria-label="测试会话处理进度"]').max===31,'per-session progress missing')
  assert(document.querySelector('.sync-contact-progress').textContent.includes('消息处理成功'),'successful task result missing')
+ assert(document.querySelector('section[aria-label="上传与中台队列"]').textContent.includes('2.0 KiB/s'),'missing client transfer speed')
+ assert(document.querySelector('section[aria-label="上传与中台队列"]').textContent.includes('已消费 9 批'),'missing server receipt metrics')
+ assert(document.querySelector('[aria-label="已核实会话占比"]').value===1,'server-confirmed session completion metric missing')
  assert(panel().textContent.includes('本次新增 31 条') && panel().textContent.includes('持续补齐已开启'),'missing persistent result')
  assert(document.querySelectorAll('.toast-item').length===1,'missing completion notification')
  await act(async()=>emitStatus({...running,existing:15}))
