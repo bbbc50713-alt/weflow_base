@@ -7750,6 +7750,11 @@ function ChatPage(props: ChatPageProps) {
                 onRefreshMessages={handleRefreshMessages}
                 onToggleDetailPanel={toggleDetailPanel}
               />
+              {!standaloneSessionWindow && <div style={{ padding: '6px 18px', textAlign: 'right' }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => navigate(`/history-sync?session=${encodeURIComponent(currentSessionId || '')}`)}>
+                  同步当前聊天到中台
+                </button>
+              </div>}
               {showJumpPopover && createPortal(
                 <div
                   ref={jumpPopoverPortalRef}

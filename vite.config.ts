@@ -82,8 +82,9 @@ const exportWorkerElectronShimPlugin = () => {
 export default defineConfig({
   base: './',
   server: {
-    port: 3000,
-    strictPort: false  // 如果3000被占用，自动尝试下一个
+    host: '127.0.0.1',
+    port: 18074, // 避开本机 Windows 保留的 2979–3078 端口范围。
+    strictPort: false // 常规端口占用时自动尝试下一个可用端口。
   },
   build: {
     chunkSizeWarningLimit: 900,

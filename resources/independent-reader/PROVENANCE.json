@@ -1,0 +1,12 @@
+{
+  "component": "SQLite3 Multiple Ciphers",
+  "version": "2.7.1",
+  "sqliteVersion": "3.54.1",
+  "source": "https://github.com/utelle/SQLite3MultipleCiphers",
+  "release": "https://github.com/utelle/SQLite3MultipleCiphers/releases/tag/v2.7.1",
+  "archive": "sqlite3mc-2.7.1-sqlite-3.54.1-win64.zip",
+  "archiveSha256": "0fc0fb1c0af5e16ebf8497f41da781af9a20b21272a779ed22e852c8f9b605eb",
+  "files": {
+    "win32/x64/sqlite3mc.dll": "dc4e169632eec6c335214e3cc425ca9f5d57248235380622a4b4dc042e181b74"
+  }
+}

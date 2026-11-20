@@ -80,3 +80,7 @@ weflow-web-offical
 /scripts/syncWedecrypt.py
 /scripts/syncWelive.py
 /WeLive
+# Local packaging and agent backups
+/release-smoke/
+/release-smoke2/
+/.codex-backups/

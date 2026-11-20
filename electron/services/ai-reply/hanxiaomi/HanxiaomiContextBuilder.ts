@@ -4,7 +4,10 @@ import type {
   HanxiaomiContactInfo,
   HanxiaomiContextBuildInput,
   HanxiaomiContextMessage,
-  HanxiaomiReplyRequest
+  HanxiaomiImagePayload,
+  HanxiaomiReplyRequest,
+  HanxiaomiVoiceAudioPayload,
+  HanxiaomiVoiceTranscriptTarget
 } from './types'
 import type { Message } from '../../chatService'
 
@@ -57,20 +60,20 @@ export async function buildHanxiaomiReplyRequest(input: HanxiaomiContextBuildInp
   }
 
   const bufferedLatest = input.bufferedMessages[input.bufferedMessages.length - 1]
-  const normalizedAll = normalizeMessages(latestResult.messages, input.contactId, input.identitySalt)
-  const pickedCurrent = pickCurrentMessage(input.contactId, latestResult.messages, input.currentContent, input.identitySalt, bufferedLatest)
+  const pickedCurrent = await pickCurrentMessage(input.contactId, latestResult.messages, input.currentContent, input.identitySalt, bufferedLatest, input.provider)
   const currentMessage = pickedCurrent.message
   const currentKey = currentMessage.message_key
   const bufferedKeys = new Set(input.bufferedMessages.flatMap(bufferedMessageIdentityTokens))
   const currentTs = Date.parse(currentMessage.timestamp)
+  const normalizedAll = await normalizeMessages(
+    latestResult.messages,
+    input.contactId,
+    input.identitySalt,
+    input.provider,
+    new Set([...bufferedKeys, currentKey].filter(Boolean)),
+    Number.isFinite(currentTs) ? currentTs : undefined
+  )
   const history = normalizedAll
-    .filter(message => {
-      if (message.message_key === currentKey) return false
-      if (bufferedKeys.has(message.message_key)) return false
-      const messageTs = Date.parse(message.timestamp)
-      if (Number.isFinite(currentTs) && Number.isFinite(messageTs) && messageTs >= currentTs) return false
-      return true
-    })
   const precedingLimit = windowSize - 1
   const preceding = history.slice(Math.max(0, history.length - precedingLimit))
 
@@ -127,49 +130,90 @@ async function buildContactInfo(input: HanxiaomiContextBuildInput, hasProfile: b
   }
 }
 
-function pickCurrentMessage(
+async function pickCurrentMessage(
   contactId: string,
   messages: Message[],
   currentContent: string,
   salt: string,
-  latestBuffered: BufferedMessageForContext
-): PickedCurrentMessage {
+  latestBuffered: BufferedMessageForContext,
+  provider: HanxiaomiContextBuildInput['provider']
+): Promise<PickedCurrentMessage> {
   const sorted = [...messages].sort(compareMessageTimeline)
   const tokens = new Set(bufferedMessageIdentityTokens(latestBuffered))
   const matched = sorted.find(message => messageMatchesBuffered(message, tokens))
   if (matched) {
-    const normalized = normalizeMessage(matched, contactId, salt)
+    const messageKey = String(matched.messageKey || '').trim()
+      || String(matched.localId || matched.serverId || `${contactId}:${matched.createTime}:${matched.sortSeq}`)
+    const sender = String(matched.senderUsername || '').trim()
+    const currentLocalType = Number(matched.localType || latestBuffered.type || 1)
+    const voiceTarget = voiceTargetFromMessage(matched, latestBuffered)
+    const voicePayload = currentLocalType === 34
+      ? await voiceAudioPayloadForMessage(contactId, voiceTarget, provider)
+      : undefined
+    const imagePayload = currentLocalType === 3
+      ? await imagePayloadForMessage(contactId, voiceTarget, provider)
+      : undefined
+    const message: HanxiaomiContextMessage = {
+      message_key: messageKey,
+      role: 'customer',
+      timestamp: toIsoTimestamp(Number(matched.createTime || 0) * 1000),
+      content: (voicePayload || imagePayload)
+        ? safeContent(currentContent, currentLocalType)
+        : await safeContentForMessage(currentContent, currentLocalType, contactId, voiceTarget, provider),
+      content_type: contentType(currentLocalType),
+      sender_ref: sender ? hashRef(salt || 'weflow-sender', sender) : undefined
+    }
+    if (voicePayload) message.voice = voicePayload
+    if (imagePayload) message.image = imagePayload
     return {
       source: 'buffered_match',
-      message: {
-        ...normalized,
-        role: 'customer',
-        content: safeContent(currentContent, Number(matched.localType || latestBuffered.type || 1)),
-        content_type: contentType(Number(matched.localType || latestBuffered.type || 1))
-      }
+      message
     }
   }
 
   const timestamp = latestBuffered.timestamp || Date.now()
   const fallbackKey = latestBuffered.msgId || latestBuffered.messageKey || `buffer:${contactId}:${timestamp}`
+  const currentLocalType = latestBuffered.type || 1
+  const voiceTarget = voiceTargetFromBuffered(latestBuffered)
+  const voicePayload = currentLocalType === 34
+    ? await voiceAudioPayloadForMessage(contactId, voiceTarget, provider)
+    : undefined
+  const imagePayload = currentLocalType === 3
+    ? await imagePayloadForMessage(contactId, voiceTarget, provider)
+    : undefined
+  const message: HanxiaomiContextMessage = {
+    message_key: fallbackKey,
+    role: 'customer',
+    timestamp: toIsoTimestamp(timestamp),
+    content: (voicePayload || imagePayload)
+      ? safeContent(currentContent, currentLocalType)
+      : await safeContentForMessage(currentContent, currentLocalType, contactId, voiceTarget, provider),
+    content_type: contentType(currentLocalType),
+    sender_ref: latestBuffered.senderId ? hashRef(salt, latestBuffered.senderId) : undefined
+  }
+  if (voicePayload) message.voice = voicePayload
+  if (imagePayload) message.image = imagePayload
   return {
     source: 'buffered_fallback',
-    message: {
-      message_key: fallbackKey,
-      role: 'customer',
-      timestamp: toIsoTimestamp(timestamp),
-      content: safeContent(currentContent, latestBuffered.type || 1),
-      content_type: contentType(latestBuffered.type || 1),
-      sender_ref: latestBuffered.senderId ? hashRef(salt, latestBuffered.senderId) : undefined
-    }
+    message
   }
 }
 
-function normalizeMessages(messages: Message[], contactId: string, salt: string): HanxiaomiContextMessage[] {
+async function normalizeMessages(
+  messages: Message[],
+  contactId: string,
+  salt: string,
+  provider: HanxiaomiContextBuildInput['provider'],
+  excludedTokens: Set<string> = new Set(),
+  beforeTimestampMs?: number
+): Promise<HanxiaomiContextMessage[]> {
   const seen = new Set<string>()
   const output: HanxiaomiContextMessage[] = []
   for (const message of [...messages].sort(compareMessageTimeline)) {
-    const normalized = normalizeMessage(message, contactId, salt)
+    if (excludedTokens.size && messageIdentityTokens(message).some(token => excludedTokens.has(token))) continue
+    const messageTs = normalizeTimestampMs(Number(message.createTime || 0) * 1000, 0)
+    if (beforeTimestampMs && messageTs && messageTs >= beforeTimestampMs) continue
+    const normalized = await normalizeMessage(message, contactId, salt, provider)
     if (!normalized.message_key || seen.has(normalized.message_key)) continue
     seen.add(normalized.message_key)
     output.push(normalized)
@@ -177,16 +221,28 @@ function normalizeMessages(messages: Message[], contactId: string, salt: string)
   return output
 }
 
-function normalizeMessage(message: Message, contactId: string, salt: string): HanxiaomiContextMessage {
+async function normalizeMessage(
+  message: Message,
+  contactId: string,
+  salt: string,
+  provider: HanxiaomiContextBuildInput['provider']
+): Promise<HanxiaomiContextMessage> {
   const messageKey = String(message.messageKey || '').trim()
     || String(message.localId || message.serverId || `${contactId}:${message.createTime}:${message.sortSeq}`)
   const sender = String(message.senderUsername || '').trim()
+  const localType = Number(message.localType || 1)
   return {
     message_key: messageKey,
     role: Number(message.isSend || 0) === 1 ? 'operator' : 'customer',
     timestamp: toIsoTimestamp(Number(message.createTime || 0) * 1000),
-    content: safeContent(message.parsedContent || message.content || message.rawContent || '', Number(message.localType || 1)),
-    content_type: contentType(Number(message.localType || 1)),
+    content: await safeContentForMessage(
+      message.parsedContent || message.content || message.rawContent || '',
+      localType,
+      contactId,
+      voiceTargetFromMessage(message),
+      provider
+    ),
+    content_type: contentType(localType),
     sender_ref: sender ? hashRef(salt || 'weflow-sender', sender) : undefined
   }
 }
@@ -233,6 +289,147 @@ function safeContent(raw: string, localType: number): string {
   const text = markdownToPlainText(String(raw || '')).trim()
   if (text) return text.slice(0, 4000)
   return MEDIA_TYPE_LABELS[localType] || '[非文本消息]'
+}
+
+async function safeContentForMessage(
+  raw: string,
+  localType: number,
+  contactId: string,
+  voiceTarget: HanxiaomiVoiceTranscriptTarget,
+  provider: HanxiaomiContextBuildInput['provider']
+): Promise<string> {
+  if (localType === 34 && provider.getVoiceTranscript) {
+    try {
+      const result = await provider.getVoiceTranscript(contactId, voiceTarget)
+      const transcript = markdownToPlainText(String(result.transcript || '')).trim()
+      if (result.success && transcript) {
+        return `[语音转文字] ${transcript}`.slice(0, 4000)
+      }
+      if (result.error) {
+        console.warn(`[HanxiaomiContextBuilder] voice transcript failed: ${result.error}`)
+      }
+    } catch (error) {
+      console.warn(`[HanxiaomiContextBuilder] voice transcript exception: ${String(error)}`)
+    }
+  }
+  return safeContent(raw, localType)
+}
+
+async function voiceAudioPayloadForMessage(
+  contactId: string,
+  voiceTarget: HanxiaomiVoiceTranscriptTarget,
+  provider: HanxiaomiContextBuildInput['provider']
+): Promise<HanxiaomiVoiceAudioPayload | undefined> {
+  if (!provider.getVoiceAudio) return undefined
+  try {
+    const result = await provider.getVoiceAudio(contactId, voiceTarget)
+    const audioBase64 = String(result.audioBase64 || '').trim()
+    if (result.success && audioBase64) {
+      const payload: HanxiaomiVoiceAudioPayload = {
+        audio_base64: audioBase64,
+        audio_format: normalizeVoiceAudioFormat(result.format),
+        sample_rate: normalizeVoiceSampleRate(result.sampleRate)
+      }
+      const durationSeconds = normalizeOptionalPositiveNumber(result.durationSeconds)
+      if (durationSeconds !== undefined) payload.duration_seconds = durationSeconds
+      return payload
+    }
+    if (result.error) {
+      console.warn(`[HanxiaomiContextBuilder] voice audio fetch failed: ${result.error}`)
+    }
+  } catch (error) {
+    console.warn(`[HanxiaomiContextBuilder] voice audio fetch exception: ${String(error)}`)
+  }
+  return undefined
+}
+
+function normalizeVoiceAudioFormat(value: unknown): 'wav' | 'pcm' {
+  const normalized = String(value || '').trim().toLowerCase()
+  return normalized === 'pcm' ? 'pcm' : 'wav'
+}
+
+function normalizeVoiceSampleRate(value: unknown): number {
+  const raw = Number(value)
+  if (!Number.isFinite(raw) || raw <= 0) return 24000
+  return Math.max(8000, Math.min(48000, Math.floor(raw)))
+}
+
+function normalizeOptionalPositiveNumber(value: unknown): number | undefined {
+  const raw = Number(value)
+  if (!Number.isFinite(raw) || raw <= 0) return undefined
+  return raw
+}
+
+async function imagePayloadForMessage(
+  contactId: string,
+  target: HanxiaomiVoiceTranscriptTarget,
+  provider: HanxiaomiContextBuildInput['provider']
+): Promise<HanxiaomiImagePayload | undefined> {
+  if (!provider.getImageData) return undefined
+  try {
+    const result = await provider.getImageData(contactId, target)
+    const imageBase64 = String(result.imageBase64 || '').trim()
+    const imageUrl = String(result.imageUrl || '').trim()
+    if (result.success && (imageBase64 || imageUrl)) {
+      const payload: HanxiaomiImagePayload = {
+        mime_type: normalizeImageMimeType(result.mimeType)
+      }
+      if (imageBase64) payload.image_base64 = imageBase64
+      if (imageUrl) payload.image_url = imageUrl
+      return payload
+    }
+    if (result.error) {
+      console.warn(`[HanxiaomiContextBuilder] image data fetch failed: ${result.error}`)
+    }
+  } catch (error) {
+    console.warn(`[HanxiaomiContextBuilder] image data fetch exception: ${String(error)}`)
+  }
+  return undefined
+}
+
+function normalizeImageMimeType(value: unknown): 'image/jpeg' | 'image/png' | 'image/webp' {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === 'image/png' || normalized === 'png') return 'image/png'
+  if (normalized === 'image/webp' || normalized === 'webp') return 'image/webp'
+  return 'image/jpeg'
+}
+
+function voiceTargetFromMessage(
+  message: Partial<Message>,
+  fallback?: Partial<BufferedMessageForContext>
+): HanxiaomiVoiceTranscriptTarget {
+  const anyMessage = message as any
+  return {
+    msgId: String(anyMessage.localId ?? fallback?.localId ?? fallback?.msgId ?? anyMessage.messageKey ?? '').trim(),
+    messageKey: String(anyMessage.messageKey ?? fallback?.messageKey ?? '').trim(),
+    localId: anyMessage.localId ?? fallback?.localId,
+    serverId: anyMessage.serverId ?? fallback?.serverId,
+    serverIdRaw: anyMessage.serverIdRaw ?? fallback?.serverIdRaw,
+    createTime: toCreateTimeSeconds(anyMessage.createTime ?? fallback?.timestamp),
+    timestamp: normalizeTimestampMs(anyMessage.timestamp ?? fallback?.timestamp ?? (anyMessage.createTime ? Number(anyMessage.createTime) * 1000 : 0), 0),
+    senderId: String(anyMessage.senderId ?? fallback?.senderId ?? '').trim(),
+    senderUsername: typeof anyMessage.senderUsername === 'string' ? anyMessage.senderUsername : undefined
+  }
+}
+
+function voiceTargetFromBuffered(message: BufferedMessageForContext): HanxiaomiVoiceTranscriptTarget {
+  return {
+    msgId: String(message.localId ?? message.msgId ?? message.messageKey ?? '').trim(),
+    messageKey: String(message.messageKey ?? '').trim(),
+    localId: message.localId,
+    serverId: message.serverId,
+    serverIdRaw: message.serverIdRaw,
+    createTime: toCreateTimeSeconds(message.timestamp),
+    timestamp: normalizeTimestampMs(message.timestamp, 0),
+    senderId: String(message.senderId ?? '').trim()
+  }
+}
+
+function toCreateTimeSeconds(value: unknown): number | undefined {
+  const raw = Number(value)
+  if (!Number.isFinite(raw) || raw <= 0) return undefined
+  if (raw > 100000000000) return Math.floor(raw / 1000)
+  return Math.floor(raw)
 }
 
 function contentType(localType: number): string {

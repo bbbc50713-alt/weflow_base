@@ -1,7 +1,11 @@
 import { parentPort, workerData } from 'worker_threads'
 import { WcdbCore } from './services/wcdbCore'
+import { IndependentReader } from './services/independent-reader/IndependentReader'
 
 const core = new WcdbCore()
+const independent = process.platform === 'win32' && process.arch === 'x64'
+    ? new IndependentReader((type, json) => parentPort?.postMessage({ id: -1, type: 'monitor', payload: { type, json } }))
+    : null
 
 if (parentPort) {
     parentPort.on('message', async (msg) => {
@@ -9,6 +13,11 @@ if (parentPort) {
 
         try {
             let result: any
+            if (independent) {
+                result = await independent.dispatch(type, payload || {})
+                parentPort!.postMessage({ id, result })
+                return
+            }
 
             switch (type) {
                 case 'setPaths':

@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import { Routes, Route, Navigate, useNavigate, useLocation, type Location } from 'react-router-dom'
+import HistorySyncPage from './pages/HistorySyncPage'
+import { Suspense, useEffect, useRef, useState } from 'react'
+import { Routes, Route, useNavigate, useLocation, type Location } from 'react-router-dom'
 import TitleBar from './components/TitleBar'
+import { detailPages, restoredPages } from './restoredNavigation'
 import Sidebar from './components/Sidebar'
 import RouteGuard from './components/RouteGuard'
 import WelcomePage from './pages/WelcomePage'
@@ -34,6 +36,8 @@ import WindowCloseDialog from './components/WindowCloseDialog'
 
 function App() {
   const navigate = useNavigate()
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
   const location = useLocation()
   const settingsBackgroundRef = useRef<Location>({
     pathname: '/home',
@@ -45,6 +49,7 @@ function App() {
 
   const {
     setDbConnected,
+    setDbConnectionError,
     updateInfo,
     setUpdateInfo,
     isDownloading,
@@ -404,13 +409,14 @@ function App() {
             setDbConnected(true, dbPath)
             // 如果当前在欢迎页，跳转到首页
             if (window.location.hash === '#/' || window.location.hash === '') {
-              navigate('/home')
+              navigateRef.current('/home')
             }
           } else {
 
             // 如果错误信息包含 VC++ 或数据服务相关内容，不清除配置，只提示用户
             // 其他错误可能需要重新配置
             const errorMsg = result.error || ''
+            setDbConnectionError(errorMsg || '微信数据库连接失败')
             if (errorMsg.includes('Visual C++') ||
               errorMsg.includes('DLL') ||
               errorMsg.includes('Worker') ||
@@ -423,12 +429,13 @@ function App() {
         }
       } catch (e) {
         console.error('自动连接出错:', e)
+        setDbConnectionError(e instanceof Error ? e.message : String(e))
         // 捕获异常但不清除配置，防止循环重新引导
       }
     }
 
     autoConnect()
-  }, [isAgreementWindow, isOnboardingWindow, navigate, setDbConnected])
+  }, [isAgreementWindow, isOnboardingWindow, setDbConnected, setDbConnectionError])
 
   // 检查应用锁
   useEffect(() => {
@@ -677,20 +684,15 @@ function App() {
               <Route path="/account-management" element={<AccountManagementPage />} />
               <Route path="/chat" element={<ChatPage />} />
 
-              <Route path="/analytics/*" element={<Navigate to="/home" replace />} />
-              <Route path="/group-analytics" element={<Navigate to="/home" replace />} />
-              <Route path="/annual-report/*" element={<Navigate to="/home" replace />} />
-              <Route path="/dual-report/*" element={<Navigate to="/home" replace />} />
-              <Route path="/footprint" element={<Navigate to="/home" replace />} />
-              <Route path="/export" element={<Navigate to="/home" replace />} />
-              <Route path="/resources" element={<Navigate to="/home" replace />} />
-              <Route path="/backup" element={<Navigate to="/home" replace />} />
-              <Route path="/insight-inbox" element={<Navigate to="/home" replace />} />
+              {[...restoredPages, ...detailPages].map(({ path, page: Page }) =>
+                <Route key={path} path={path} element={<Suspense fallback={<p role="status">正在打开页面…</p>}><Page /></Suspense>} />
+              )}
 
               <Route path="/sns" element={<SnsPage />} />
               <Route path="/biz" element={<BizPage />} />
               <Route path="/contacts" element={<ContactsPage />} />
               <Route path="/ai-reply" element={<AIReplyPage />} />
+              <Route path="/history-sync" element={<HistorySyncPage />} />
               <Route path="/chat-history/:sessionId/:messageId" element={<ChatHistoryPage />} />
               <Route path="/chat-history-inline/:payloadId" element={<ChatHistoryPage />} />
             </Routes>

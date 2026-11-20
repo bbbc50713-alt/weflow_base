@@ -7,6 +7,31 @@ type CloseConfirmPayload = {
 
 // 暴露给渲染进程的 API
 contextBridge.exposeInMainWorld('electronAPI', {
+  historySync: {
+    status: () => ipcRenderer.invoke('historySync:status'),
+    sessions: () => ipcRenderer.invoke('historySync:sessions'),
+    bind: (origin: string, code: string) => ipcRenderer.invoke('historySync:bind', origin, code),
+    unbind: () => ipcRenderer.invoke('historySync:unbind'),
+    start: (options: import('../shared/wechatHistory').HistoryOptions) => ipcRenderer.invoke('historySync:start', options),
+    pause: () => ipcRenderer.invoke('historySync:pause'),
+    resume: () => ipcRenderer.invoke('historySync:resume'),
+    retry: () => ipcRenderer.invoke('historySync:retry'),
+    preview: (options: import('../shared/wechatHistory').HistoryOptions, requestId?: string) => ipcRenderer.invoke('historySync:preview', options, requestId),
+    onPreviewRow: (callback: Parameters<import('../shared/wechatHistory').HistorySyncApi['onPreviewRow']>[0]) => {
+      const listener = (_: unknown, data: Parameters<typeof callback>[0]) => callback(data)
+      ipcRenderer.on('historySync:previewRow',listener)
+      return () => ipcRenderer.removeListener('historySync:previewRow',listener)
+    },
+    review: () => ipcRenderer.invoke('historySync:review'),
+    rescan: () => ipcRenderer.invoke('historySync:rescan'),
+    report: () => ipcRenderer.invoke('historySync:report'),
+    onStatus: (callback: (status: import('../shared/wechatHistory').HistoryStatus) => void) => {
+      const listener = (_: unknown, status: import('../shared/wechatHistory').HistoryStatus) => callback(status)
+      ipcRenderer.on('historySync:status', listener)
+      return () => ipcRenderer.removeListener('historySync:status', listener)
+    }
+  },
+
   // 配置
   config: {
     get: (key: string) => ipcRenderer.invoke('config:get', key),

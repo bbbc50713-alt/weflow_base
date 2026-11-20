@@ -3,6 +3,7 @@ import { create } from 'zustand'
 export interface AppState {
   // 数据库状态
   isDbConnected: boolean
+  dbConnectionError: string | null
   dbPath: string | null
   myWxid: string | null
 
@@ -23,6 +24,7 @@ export interface AppState {
 
   // 操作
   setDbConnected: (connected: boolean, path?: string) => void
+  setDbConnectionError: (error: string | null) => void
   setMyWxid: (wxid: string) => void
   setLoading: (loading: boolean, text?: string) => void
 
@@ -42,6 +44,7 @@ export interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   isDbConnected: false,
+  dbConnectionError: null,
   dbPath: null,
   myWxid: null,
   isLoading: false,
@@ -57,8 +60,10 @@ export const useAppStore = create<AppState>((set) => ({
 
   setDbConnected: (connected, path) => set({
     isDbConnected: connected,
-    dbPath: path ?? null
+    dbPath: path ?? null,
+    ...(connected ? { dbConnectionError: null } : {})
   }),
+  setDbConnectionError: (error) => set({ dbConnectionError: error }),
 
   setMyWxid: (wxid) => set({ myWxid: wxid }),
 
@@ -77,6 +82,7 @@ export const useAppStore = create<AppState>((set) => ({
 
   reset: () => set({
     isDbConnected: false,
+    dbConnectionError: null,
     dbPath: null,
     myWxid: null,
     isLoading: false,

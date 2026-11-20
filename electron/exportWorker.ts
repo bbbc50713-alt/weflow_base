@@ -146,6 +146,8 @@ if (config.userDataPath) {
 process.env.WEFLOW_PROJECT_NAME = process.env.WEFLOW_PROJECT_NAME || 'WeFlow'
 
 const shouldUseWeliveEngine = () => {
+  // Windows x64 uses the independent reader and existing JS formatters.
+  if (process.platform === 'win32' && process.arch === 'x64') return false
   if (config.mode === 'contacts') return false
   const explicit = String(config.options?.exportEngine || config.options?.engine || '').trim().toLowerCase()
   if (explicit === 'welive') return true
@@ -515,7 +517,14 @@ async function run() {
       config.options || {}
     )
   } else if (config.mode === 'single') {
-    result = await exportService.exportSessionToChatLab(
+    const formats = {
+      json: 'exportSessionToDetailedJson', 'arkme-json': 'exportSessionToDetailedJson',
+      excel: 'exportSessionToExcel', txt: 'exportSessionToTxt', weclone: 'exportSessionToWeCloneCsv',
+      html: 'exportSessionToHtml', chatlab: 'exportSessionToChatLab', 'chatlab-jsonl': 'exportSessionToChatLab'
+    } as const
+    const method = formats[String(config.options?.format || 'chatlab') as keyof typeof formats]
+    if (!method) throw new Error('此导出格式尚未实现')
+    result = await exportService.orchestrator[method](
       String(config.sessionId || '').trim(),
       String(config.outputPath || '').trim(),
       config.options || { format: 'chatlab' },
@@ -535,13 +544,18 @@ async function run() {
   flushProgress()
   flushCreatedPaths()
 
+  // Close native SQLite handles before the parent terminates this worker.
+  // Otherwise Windows keeps encrypted snapshot files locked until app exit.
+  await wcdbService.shutdown()
+
   parentPort?.postMessage({
     type: 'export:result',
     data: result
   })
 }
 
-run().catch((error) => {
+run().catch(async (error) => {
+  try { const { wcdbService } = await import('./services/wcdbService'); await wcdbService.shutdown() } catch {}
   flushProgress()
   flushCreatedPaths()
   parentPort?.postMessage({

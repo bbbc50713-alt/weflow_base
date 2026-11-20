@@ -49,6 +49,18 @@ esbuild.buildSync({
   logLevel: 'silent'
 })
 
+esbuild.buildSync({
+  entryPoints: ['electron/services/ai-reply/AIReplyService.ts'],
+  absWorkingDir: root,
+  outfile: path.join(outDir, 'AIReplyService.bundle.js'),
+  platform: 'node',
+  format: 'cjs',
+  target: 'node18',
+  bundle: true,
+  sourcemap: false,
+  logLevel: 'silent'
+})
+
 const {
   buildHanxiaomiReplyRequest,
   buildHanxiaomiEventKey,
@@ -64,9 +76,10 @@ const {
 } = require(path.join(outDir, 'hanxiaomi/HanxiaomiStalenessGuard.js'))
 const { HanxiaomiOutboundQueue } = require(path.join(outDir, 'queue/HanxiaomiOutboundQueue.js'))
 const { HanxiaomiInboundQueue } = require(path.join(outDir, 'queue/HanxiaomiInboundQueue.js'))
-const { mergeDeliveryPolicy } = require(path.join(outDir, 'queue/DeliveryPacer.js'))
+const { computeInitialDelayMs, mergeDeliveryPolicy } = require(path.join(outDir, 'queue/DeliveryPacer.js'))
 const { selectSameTimestampIncomingMessages } = require(path.join(outDir, 'messagePushTiming.js'))
 const { isMessagePushDeliveryCommitted } = require(path.join(outDir, 'messagePushDelivery.js'))
+const { AIReplyService } = require(path.join(outDir, 'AIReplyService.bundle.js'))
 
 async function waitFor(predicate, timeoutMs = 1500) {
   const start = Date.now()
@@ -188,6 +201,140 @@ async function testCurrentMessageIsBoundToBufferedMessageNotLatestInboundGuess()
   assert.strictEqual(request.current_message.message_key, 'current-buffered')
   assert.strictEqual(request.request_meta.current_source, 'buffered_match')
   assert(!request.history.some(item => item.message_key === 'later-customer'))
+}
+
+async function testVoiceMessageAttachesAudioBeforeSendingToHanxiaomi() {
+  const voiceAudio = Buffer.from('wav-bytes').toString('base64')
+  const audioTargets = []
+  const transcriptTargets = []
+  const provider = {
+    getLatestMessages: async () => ({
+      success: true,
+      messages: [
+        message(123, {
+          messageKey: 'voice-current',
+          localId: 88,
+          serverId: 99001,
+          serverIdRaw: '99001',
+          localType: 34,
+          createTime: 1700000123,
+          parsedContent: '',
+          rawContent: '',
+          isSend: 0,
+          senderUsername: 'voice-sender'
+        })
+      ]
+    }),
+    getContact: async () => ({ contact: { displayName: 'voice-contact' } }),
+    getLongProfile: async () => '',
+    getAccountId: () => 'local-account',
+    getVoiceAudio: async (contactId, target) => {
+      audioTargets.push({ contactId, target })
+      return { success: true, audioBase64: voiceAudio, format: 'wav', sampleRate: 24000 }
+    },
+    getVoiceTranscript: async (contactId, target) => {
+      transcriptTargets.push({ contactId, target })
+      return { success: true, transcript: '我想预约医生' }
+    }
+  }
+
+  const request = await buildHanxiaomiReplyRequest({
+    accountId: 'local-account',
+    contactId: 'contact-voice',
+    contactName: 'voice-contact',
+    isFirstSuccessfulCall: false,
+    currentContent: '',
+    bufferedMessages: [{
+      msgId: 'server-msg-not-local',
+      messageKey: 'voice-current',
+      localId: 88,
+      serverId: 99001,
+      serverIdRaw: '99001',
+      content: '',
+      timestamp: 1700000123 * 1000,
+      type: 34,
+      senderId: 'voice-sender'
+    }],
+    mode: 'auto',
+    scenario: 'reply',
+    identitySalt: 'salt',
+    provider
+  })
+
+  assert.strictEqual(request.current_message.content, '[语音消息]')
+  assert.strictEqual(request.current_message.content_type, 'voice')
+  assert.strictEqual(request.current_message.voice.audio_base64, voiceAudio)
+  assert.strictEqual(request.current_message.voice.audio_format, 'wav')
+  assert.strictEqual(request.current_message.voice.sample_rate, 24000)
+  assert.strictEqual(audioTargets.length, 1)
+  assert.strictEqual(audioTargets[0].contactId, 'contact-voice')
+  assert.strictEqual(audioTargets[0].target.msgId, '88')
+  assert.strictEqual(audioTargets[0].target.createTime, 1700000123)
+  assert.strictEqual(transcriptTargets.length, 0)
+}
+
+async function testImageMessageAttachesImageDataBeforeSendingToHanxiaomi() {
+  const imageBase64 = Buffer.from([0xff, 0xd8, 0xff, 0x01, 0x02]).toString('base64')
+  const imageTargets = []
+  const provider = {
+    getLatestMessages: async () => ({
+      success: true,
+      messages: [
+        message(124, {
+          messageKey: 'image-current',
+          localId: 89,
+          serverId: 99002,
+          serverIdRaw: '99002',
+          localType: 3,
+          createTime: 1700000124,
+          parsedContent: '',
+          rawContent: '',
+          isSend: 0,
+          senderUsername: 'image-sender'
+        })
+      ]
+    }),
+    getContact: async () => ({ contact: { displayName: 'image-contact' } }),
+    getLongProfile: async () => '',
+    getAccountId: () => 'local-account',
+    getImageData: async (contactId, target) => {
+      imageTargets.push({ contactId, target })
+      return { success: true, imageBase64, mimeType: 'image/jpeg' }
+    }
+  }
+
+  const request = await buildHanxiaomiReplyRequest({
+    accountId: 'local-account',
+    contactId: 'contact-image',
+    contactName: 'image-contact',
+    isFirstSuccessfulCall: false,
+    currentContent: '',
+    bufferedMessages: [{
+      msgId: 'server-msg-not-local',
+      messageKey: 'image-current',
+      localId: 89,
+      serverId: 99002,
+      serverIdRaw: '99002',
+      content: '',
+      timestamp: 1700000124 * 1000,
+      type: 3,
+      senderId: 'image-sender'
+    }],
+    mode: 'auto',
+    scenario: 'reply',
+    identitySalt: 'salt',
+    provider
+  })
+
+  assert.strictEqual(request.current_message.content, '[图片消息]')
+  assert.strictEqual(request.current_message.content_type, 'image')
+  assert.strictEqual(request.current_message.image.image_base64, imageBase64)
+  assert.strictEqual(request.current_message.image.mime_type, 'image/jpeg')
+  assert.strictEqual(imageTargets.length, 1)
+  assert.strictEqual(imageTargets[0].contactId, 'contact-image')
+  assert.strictEqual(imageTargets[0].target.msgId, '89')
+  assert.strictEqual(imageTargets[0].target.createTime, 1700000124)
+  assert.strictEqual(request.history.some(item => item.image), false)
 }
 
 async function testDifferentContactsDoNotShareHanxiaomiContextOrSession() {
@@ -520,6 +667,117 @@ async function testOutboundQueueUsesBackendSegmentsWithoutLocalSplitting() {
   assert.deepStrictEqual(sent.map(item => item.partIndex), sent.map((_, index) => index + 1))
   assert.deepStrictEqual(sent.map(item => item.text), segments)
   assert(sent.every(item => item.fullText.includes('先别着急')))
+}
+
+async function testOutboundQueueUsesOneSecondDefaultSplitGapForThreeSegments() {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hanxiaomi-split-default-gap-'))
+  const baseDir = path.join(temp, 'skills')
+  const sent = []
+  const queue = new HanxiaomiOutboundQueue(baseDir, {
+    sendText: async job => {
+      sent.push({
+        eventKey: job.eventKey,
+        text: job.text,
+        partIndex: job.partIndex,
+        partTotal: job.partTotal,
+        partGapMs: job.partGapMs,
+        sentAt: Date.now()
+      })
+      return { success: true, delivered: true, senderId: 'test' }
+    }
+  }, {
+    minDelayMs: 0,
+    maxDelayMs: 0,
+    postSendGapMsMin: 0,
+    postSendGapMsMax: 0,
+    perContactCooldownMs: 0,
+    retryDelayMs: 0,
+    staleAfterMs: 10000,
+    typingMsPerCharMin: 0,
+    typingMsPerCharMax: 0,
+    maxTypingDelayMs: 0
+  })
+
+  const segments = ['第一段', '第二段', '第三段']
+  queue.enqueue({
+    eventKey: 'event-default-gap',
+    contactId: 'contact-a',
+    contactName: '客户A',
+    text: segments.join(''),
+    segments,
+    action: 'send',
+    generatedAt: Date.now(),
+    triggerMessageTimestamp: Date.now(),
+    receivedMessage: 'hi'
+  })
+
+  await waitFor(() => sent.length === 3, 4500)
+  assert.deepStrictEqual(sent.map(item => item.text), segments)
+  assert.deepStrictEqual(sent.map(item => item.partIndex), [1, 2, 3])
+  assert.deepStrictEqual(sent.slice(1).map(item => item.partGapMs), [1000, 1000])
+  const deltas = [sent[1].sentAt - sent[0].sentAt, sent[2].sentAt - sent[1].sentAt]
+  assert(
+    deltas.every(delta => delta >= 900),
+    `expected adjacent split sends to wait about 1000ms, got ${deltas.join(',')}`
+  )
+}
+
+async function testHanxiaomiServiceConfigUpdateReachesOutboundQueue() {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hanxiaomi-service-policy-'))
+  const service = new AIReplyService(path.join(temp, 'skills'))
+  const sent = []
+  service.senderManager = {
+    isAutoSendEnabled: () => true,
+    sendText: async request => {
+      sent.push(request.text)
+      return { success: true, delivered: true, senderId: 'test' }
+    }
+  }
+
+  const normalized = service.setHanxiaomiChannelConfig({
+    deliveryPolicy: {
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      postSendGapMsMin: 0,
+      postSendGapMsMax: 0,
+      perContactCooldownMs: 0,
+      staleAfterMs: 10000,
+      splitMinGapMs: 25,
+      splitMaxGapMs: 25
+    }
+  })
+  assert.strictEqual(normalized.deliveryPolicy.splitMinGapMs, 25)
+  assert.strictEqual(normalized.deliveryPolicy.splitMaxGapMs, 25)
+
+  service.hanxiaomiOutboundQueue.enqueue({
+    eventKey: 'event-service-config',
+    contactId: 'contact-a',
+    contactName: '客户A',
+    text: '一二三',
+    segments: ['一', '二', '三'],
+    action: 'send',
+    generatedAt: Date.now(),
+    triggerMessageTimestamp: Date.now(),
+    receivedMessage: 'hi'
+  })
+
+  await waitFor(() => sent.length === 3)
+  assert.deepStrictEqual(sent, ['一', '二', '三'])
+
+  const queueFile = path.join(temp, 'hanxiaomi-queue.json')
+  await waitFor(() => {
+    if (!fs.existsSync(queueFile)) return false
+    const parsed = JSON.parse(fs.readFileSync(queueFile, 'utf-8'))
+    return Object.values(parsed.outbound)
+      .filter(job => job.parentEventKey === 'event-service-config' && job.partIndex > 1)
+      .length === 2
+  })
+  const parsed = JSON.parse(fs.readFileSync(queueFile, 'utf-8'))
+  const gaps = Object.values(parsed.outbound)
+    .filter(job => job.parentEventKey === 'event-service-config' && job.partIndex > 1)
+    .sort((a, b) => a.partIndex - b.partIndex)
+    .map(job => job.partGapMs)
+  assert.deepStrictEqual(gaps, [25, 25])
 }
 
 async function testOutboundQueueSendsFullTextAsOneMessageWhenSegmentsMissing() {
@@ -987,8 +1245,11 @@ async function testInboundQueueSerializesSameContact() {
 
 function testDeliveryPolicyNormalizesConfiguredValues() {
   const defaultPolicy = mergeDeliveryPolicy()
-  assert.strictEqual(defaultPolicy.splitMinGapMs, 2500)
-  assert.strictEqual(defaultPolicy.splitMaxGapMs, 8000)
+  assert.strictEqual(defaultPolicy.minDelayMs, 0)
+  assert.strictEqual(defaultPolicy.maxDelayMs, 0)
+  assert.strictEqual(defaultPolicy.splitMinGapMs, 1000)
+  assert.strictEqual(defaultPolicy.splitMaxGapMs, 1000)
+  assert.strictEqual(computeInitialDelayMs('这是一条正常长度的微信回复', defaultPolicy), 0)
 
   const zeroPolicy = mergeDeliveryPolicy({
     minDelayMs: 0,
@@ -1009,6 +1270,8 @@ function testDeliveryPolicyNormalizesConfiguredValues() {
   assert.strictEqual(zeroPolicy.perContactCooldownMs, 0)
   assert.strictEqual(zeroPolicy.retryDelayMs, 0)
   assert.strictEqual(zeroPolicy.staleAfterMs, 1000)
+  assert.strictEqual(zeroPolicy.splitMinGapMs, 1000)
+  assert.strictEqual(zeroPolicy.splitMaxGapMs, 1000)
 
   const invertedPolicy = mergeDeliveryPolicy({
     minDelayMs: 45000,
@@ -1016,11 +1279,22 @@ function testDeliveryPolicyNormalizesConfiguredValues() {
     postSendGapMsMin: 25000,
     postSendGapMsMax: 8000,
     typingMsPerCharMin: 180,
-    typingMsPerCharMax: 80
+    typingMsPerCharMax: 80,
+    splitMinGapMs: 2000,
+    splitMaxGapMs: 500
   })
   assert.strictEqual(invertedPolicy.maxDelayMs, 45000)
   assert.strictEqual(invertedPolicy.postSendGapMsMax, 25000)
   assert.strictEqual(invertedPolicy.typingMsPerCharMax, 180)
+  assert.strictEqual(invertedPolicy.splitMinGapMs, 2000)
+  assert.strictEqual(invertedPolicy.splitMaxGapMs, 2000)
+
+  const invalidSplitPolicy = mergeDeliveryPolicy({
+    splitMinGapMs: Number.NaN,
+    splitMaxGapMs: Number.NaN
+  })
+  assert.strictEqual(invalidSplitPolicy.splitMinGapMs, 1000)
+  assert.strictEqual(invalidSplitPolicy.splitMaxGapMs, 1000)
 }
 
 function testMessagePushSameTimestampRecoverySelection() {
@@ -1057,6 +1331,8 @@ function testMessagePushRequiresActualSseDeliveryBeforeCommit() {
 async function main() {
   await testContextWindowsAndCurrentDedup()
   await testCurrentMessageIsBoundToBufferedMessageNotLatestInboundGuess()
+  await testVoiceMessageAttachesAudioBeforeSendingToHanxiaomi()
+  await testImageMessageAttachesImageDataBeforeSendingToHanxiaomi()
   await testDifferentContactsDoNotShareHanxiaomiContextOrSession()
   await testMediaFallbackAndPrivateOnly()
   testLedgerSuccessfulContactDefinition()
@@ -1064,6 +1340,8 @@ async function main() {
   await testReplyClientRejectsOverLimitSegmentsToAvoidTruncation()
   await testOutboundQueueSerializesDelivery()
   await testOutboundQueueUsesBackendSegmentsWithoutLocalSplitting()
+  await testOutboundQueueUsesOneSecondDefaultSplitGapForThreeSegments()
+  await testHanxiaomiServiceConfigUpdateReachesOutboundQueue()
   await testOutboundQueueSendsFullTextAsOneMessageWhenSegmentsMissing()
   await testOutboundQueueFallsBackToFullTextWhenBackendSegmentsOverflow()
   testSplitStalenessAllowsOutboundMessagesAfterSequenceStarts()

@@ -162,14 +162,14 @@ export const useAIReplyStore = create<AIReplyState>((set, get): AIReplyState => 
     identitySalt: '',
     inboundConcurrency: 3,
     deliveryPolicy: {
-      minDelayMs: 8000,
-      maxDelayMs: 45000,
-      postSendGapMsMin: 8000,
-      postSendGapMsMax: 25000,
-      perContactCooldownMs: 60000,
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      postSendGapMsMin: 0,
+      postSendGapMsMax: 0,
+      perContactCooldownMs: 0,
       staleAfterMs: 180000,
-      splitMinGapMs: 2500,
-      splitMaxGapMs: 8000
+      splitMinGapMs: 1000,
+      splitMaxGapMs: 1000
     }
   },
   hanxiaomiTestResult: null,

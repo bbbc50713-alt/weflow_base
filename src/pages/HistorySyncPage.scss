@@ -1,0 +1,50 @@
+.history-sync-page {
+  height: 100%; overflow: auto; padding: 30px; box-sizing: border-box; color: var(--text-primary, #202c3b);
+  header { display: flex; gap: 14px; align-items: center; margin-bottom: 24px; }
+  h1 { margin: 0 0 8px; font-size: 23px; } h2 { font-size: 17px; margin: 0 0 20px; } h3 { font-size: 15px; }
+  p { line-height: 1.6; } header p { margin: 0; opacity: .65; }
+  .sync-status { margin-left: auto; border-radius: 20px; padding: 7px 15px; background: rgba(128,128,128,.12); white-space: nowrap; }
+  .sync-status.active { color: #148362; background: #e0f5ed; }
+  .sync-card { border: 1px solid var(--border-color, #dfe5eb); border-radius: 14px; padding: 24px; margin-bottom: 20px; background: var(--bg-secondary, #fff); }
+  .sync-account { display: flex; gap: 18px; margin: 12px 0; span { min-width: 70px; opacity: .65; } }
+  .sync-binding { display: grid; gap: 15px; max-width: 650px; label { display: grid; gap: 8px; } }
+  input:not([type=checkbox]):not([type=radio]) { padding: 9px 12px; border: 1px solid var(--border-color, #dfe5eb); border-radius: 7px; background: var(--bg-primary, #fff); color: inherit; }
+  button { padding: 9px 14px; border: 1px solid var(--border-color, #dfe5eb); border-radius: 7px; background: transparent; color: inherit; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+  button.primary { background: #169b75; color: white; border-color: #169b75; } button:disabled { opacity: .4; cursor: default; }
+  fieldset { padding: 0; border: 0; margin: 0; }
+  .sync-options, .sync-actions { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin: 15px 0; }
+  .sync-options label { display: inline-flex; align-items: center; gap: 8px; }
+  .sync-note { font-size: 12px; opacity: .7; } .sync-error { color: #c84b42; background: rgba(200,75,66,.08); padding: 12px; border-radius: 6px; }
+  .sync-session-list { max-height: 220px; overflow: auto; margin: 12px 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; label { display: flex; gap: 8px; align-items: center; padding: 6px; } small { opacity: .5; } }
+  .sync-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 14px; div { display: flex; flex-direction: column; gap: 8px; } strong { font-size: 24px; font-weight: 600; } span { font-size: 12px; opacity: .65; } }
+  .sync-problems { max-height: 300px; overflow: auto; margin-top: 15px; div { padding: 10px 0; display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--border-color, #eee); } span { font-size: 13px; opacity: .75; } }
+}
+
+.history-sync-page {
+  .sync-outcome { border-inline-start: 4px solid #169b75; display: flex; align-items: center; justify-content: space-between; gap: 16px 24px; flex-wrap: wrap; }
+  .sync-outcome h2 { margin: 0 0 6px; }
+  .sync-outcome p { margin: 4px 0; }
+  .sync-outcome-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .sync-outcome .sync-error { flex-basis: 100%; }
+  .sync-inline { padding: 2px 5px; margin: 0 2px; text-decoration: underline; }
+  h2[tabindex] { scroll-margin-top: 12px; }
+}
+
+.history-sync-page .sync-range-progress {
+  margin: 16px 0; padding: 16px; border: 1px solid var(--border-color, #ddd); border-radius: 10px;
+  p {margin: 6px 0;}
+  progress {
+    appearance: none; -webkit-appearance: none; display: block; width: 100%; height: 14px;
+    border: 0; border-radius: 999px; overflow: hidden; margin-block: 6px;
+    background: rgba(128, 128, 128, .24); accent-color: #20a564;
+    &::-webkit-progress-bar { background: transparent; border-radius: inherit; }
+    &::-webkit-progress-value { background: #20a564; border-radius: 999px; }
+    &::-moz-progress-bar { background: #20a564; border-radius: 999px; }
+  }
+  .sync-percent { float: right; font-weight: 650; font-variant-numeric: tabular-nums; }
+  small {opacity:.76;}
+  .sync-contact-progress {max-height:245px; overflow:auto; margin-top:10px;}
+  .sync-contact-progress > div {display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:8px 0;}
+  .sync-contact-progress span:first-child {flex:1 1 130px; overflow-wrap:anywhere;}
+  .sync-contact-progress progress {width:clamp(80px,26%,260px); height:10px;}
+}

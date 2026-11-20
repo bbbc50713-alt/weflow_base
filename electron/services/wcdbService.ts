@@ -12,7 +12,8 @@ interface WorkerMessage {
 }
 
 const DEFAULT_WORKER_CALL_TIMEOUT_MS = 60_000
-const SHORT_WORKER_CALL_TIMEOUT_MS = 20_000
+const SHORT_WORKER_CALL_TIMEOUT_MS = 90_000
+const LARGE_ACCOUNT_READ_TIMEOUT_MS = 3 * 60 * 60 * 1000
 const LONG_WORKER_CALL_TIMEOUT_MS = 10 * 60_000
 
 type PendingWorkerCall = {
@@ -125,7 +126,11 @@ export class WcdbService {
         const message = `WCDB Worker call timed out: ${type} (${timeoutMs}ms)`
         console.warn(`[WCDB] ${message}`)
         pending.reject(new Error(message))
-        this.restartWorkerAfterTimeout(type)
+        if (this.shouldRestartWorkerAfterTimeout(type)) {
+          this.restartWorkerAfterTimeout(type)
+        } else {
+          console.warn(`[WCDB] ${type} timed out; keeping worker alive to avoid aborting unrelated pending reads`)
+        }
       }, timeoutMs)
       timer.unref?.()
       this.pending.set(id, { resolve, reject, timer, type })
@@ -140,6 +145,8 @@ export class WcdbService {
   }
 
   private getWorkerCallTimeoutMs(type: string): number {
+    if (['open','testConnection','isConnected','getSessions','getSessionListSupplement','getContactsCompact','getDisplayNames','getAvatarUrls','getSessionMessageTypeStats','openMessageCursor','fetchMessageBatch','closeMessageCursor'].includes(type))
+      return LARGE_ACCOUNT_READ_TIMEOUT_MS
     if ([
       'isConnected',
       'getSessions',
@@ -177,6 +184,18 @@ export class WcdbService {
       return LONG_WORKER_CALL_TIMEOUT_MS
     }
     return DEFAULT_WORKER_CALL_TIMEOUT_MS
+  }
+
+  private shouldRestartWorkerAfterTimeout(type: string): boolean {
+    return [
+      'setPaths',
+      'setMonitor',
+      'testConnection',
+      'open',
+      'close',
+      'cloudInit',
+      'cloudStop'
+    ].includes(type)
   }
 
   private rejectAllPending(message: string): void {
@@ -285,6 +304,11 @@ export class WcdbService {
   /**
    * 获取会话列表
    */
+  async getSessionListSupplement(): Promise<{success:boolean; contacts?: any[]}> {
+    if (process.platform === 'win32' && process.arch === 'x64') return this.callWorker('getSessionListSupplement')
+    return this.getContactsCompact()
+  }
+
   async getSessions(): Promise<{ success: boolean; sessions?: any[]; error?: string }> {
     return this.callWorker('getSessions')
   }
@@ -583,8 +607,8 @@ export class WcdbService {
   /**
    * 打开消息游标
    */
-  async openMessageCursor(sessionId: string, batchSize: number, ascending: boolean, beginTimestamp: number, endTimestamp: number): Promise<{ success: boolean; cursor?: number; error?: string }> {
-    return this.callWorker('openMessageCursor', { sessionId, batchSize, ascending, beginTimestamp, endTimestamp })
+  async openMessageCursor(sessionId: string, batchSize: number, ascending: boolean, beginTimestamp: number, endTimestamp: number, baseTypes?: number[]): Promise<{ success: boolean; cursor?: number; error?: string }> {
+    return this.callWorker('openMessageCursor', { sessionId, batchSize, ascending, beginTimestamp, endTimestamp, baseTypes })
   }
 
   /**

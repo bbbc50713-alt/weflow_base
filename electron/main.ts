@@ -1,3 +1,4 @@
+import { historySyncService } from './services/history-sync/HistorySyncService'
 import './preload-env'
 import { app, BrowserWindow, ipcMain, nativeTheme, session, Tray, Menu, nativeImage, screen } from 'electron'
 import { Worker } from 'worker_threads'
@@ -39,6 +40,10 @@ import { bizService } from './services/bizService'
 import { backupService } from './services/backupService'
 import { imageDownloadService } from './services/imageDownloadService'
 
+if (process.env.WEFLOW_SOFTWARE_RENDERING === '1') {
+  app.disableHardwareAcceleration()
+}
+
 // 配置自动更新
 autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = true
@@ -70,6 +75,28 @@ const defaultUpdateTrack: 'stable' | 'preview' | 'dev' = (() => {
 let configService: ConfigService | null = null
 const activeExportWorkers = new Map<string, Worker>()
 const activeExportTasks = new Set<string>()
+
+function inferImageMimeTypeFromBase64(value: string): 'image/jpeg' | 'image/png' | 'image/webp' {
+  const raw = String(value || '').trim()
+  const base64 = raw.startsWith('data:') && raw.includes(',')
+    ? raw.split(',', 2)[1]
+    : raw
+  try {
+    const head = Buffer.from(base64.slice(0, 64), 'base64')
+    if (head.length >= 8 && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+      return 'image/png'
+    }
+    if (head.length >= 12 && head.toString('ascii', 0, 4) === 'RIFF' && head.toString('ascii', 8, 12) === 'WEBP') {
+      return 'image/webp'
+    }
+    if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
+      return 'image/jpeg'
+    }
+  } catch {
+    // Fall through to the safe default.
+  }
+  return 'image/jpeg'
+}
 
 const normalizeExportTaskId = (taskId: unknown): string => String(taskId || '').trim()
 const ALLOWED_EXTERNAL_URL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
@@ -1883,6 +1910,22 @@ const runLegacySnsCacheMigration = async (
 
 // 注册 IPC 处理器
 function registerIpcHandlers() {
+  ipcMain.handle('historySync:status', () => historySyncService.status())
+  ipcMain.handle('historySync:sessions', () => historySyncService.sessions())
+  ipcMain.handle('historySync:bind', (_, origin: string, code: string) => historySyncService.bind(origin, code))
+  ipcMain.handle('historySync:unbind', () => historySyncService.unbind())
+  ipcMain.handle('historySync:start', (_, options) => historySyncService.start(options))
+  ipcMain.handle('historySync:pause', () => historySyncService.pause())
+  ipcMain.handle('historySync:resume', () => historySyncService.resume())
+  ipcMain.handle('historySync:retry', () => historySyncService.retry())
+  ipcMain.handle('historySync:preview', (event, options: import('../shared/wechatHistory').HistoryOptions, requestId?: string) =>
+    historySyncService.preview(options,(row,total) => {
+      if (requestId && !event.sender.isDestroyed()) event.sender.send('historySync:previewRow',{requestId,row,total})
+    }))
+  ipcMain.handle('historySync:review', () => historySyncService.review())
+  ipcMain.handle('historySync:rescan', () => historySyncService.rescan())
+  ipcMain.handle('historySync:report', () => historySyncService.report())
+
   registerNotificationHandlers()
   ensureNotificationNavigateHandlerRegistered()
   bizService.registerHandlers()
@@ -2071,7 +2114,51 @@ function registerIpcHandlers() {
     getLatestMessages: (contactId: string, limit: number) => chatService.getLatestMessages(contactId, limit),
     getContact: (contactId: string) => chatService.getContact(contactId),
     getLongProfile: async (contactId: string) => insightProfileService.getProfileContextSection(contactId),
-    getAccountId: () => getSelfWxid()
+    getAccountId: () => getSelfWxid(),
+    getImageData: async (contactId: string, message: any) => {
+      const msgId = String(message?.localId ?? message?.msgId ?? message?.messageKey ?? '').trim()
+      if (!msgId) {
+        return { success: false, error: '图片消息缺少 localId/msgId' }
+      }
+      const result = await chatService.getImageData(contactId, msgId)
+      if (!result.success || !result.data) {
+        return { success: false, error: result.error || '读取图片数据失败' }
+      }
+      return {
+        success: true,
+        imageBase64: result.data,
+        mimeType: inferImageMimeTypeFromBase64(result.data)
+      }
+    },
+    getVoiceAudio: async (contactId: string, message: any) => {
+      const msgId = String(message?.localId ?? message?.msgId ?? message?.messageKey ?? '').trim()
+      if (!msgId) {
+        return { success: false, error: '语音消息缺少 localId/msgId' }
+      }
+      const rawCreateTime = Number(message?.createTime ?? message?.timestamp ?? 0)
+      const createTime = Number.isFinite(rawCreateTime) && rawCreateTime > 0
+        ? (rawCreateTime > 100000000000 ? Math.floor(rawCreateTime / 1000) : Math.floor(rawCreateTime))
+        : undefined
+      const senderWxid = String(message?.senderUsername ?? message?.senderId ?? '').trim() || undefined
+      const serverId = message?.serverIdRaw ?? message?.serverId
+      const result = await chatService.getVoiceData(contactId, msgId, createTime, serverId, senderWxid)
+      if (!result.success || !result.data) {
+        return { success: false, error: result.error || '读取语音 WAV 数据失败' }
+      }
+      return { success: true, audioBase64: result.data, format: 'wav', sampleRate: 24000 }
+    },
+    getVoiceTranscript: async (contactId: string, message: any) => {
+      const msgId = String(message?.localId ?? message?.msgId ?? message?.messageKey ?? '').trim()
+      if (!msgId) {
+        return { success: false, error: '语音消息缺少 localId/msgId' }
+      }
+      const rawCreateTime = Number(message?.createTime ?? message?.timestamp ?? 0)
+      const createTime = Number.isFinite(rawCreateTime) && rawCreateTime > 0
+        ? (rawCreateTime > 100000000000 ? Math.floor(rawCreateTime / 1000) : Math.floor(rawCreateTime))
+        : undefined
+      const senderWxid = String(message?.senderUsername ?? message?.senderId ?? '').trim() || undefined
+      return chatService.getVoiceTranscript(contactId, msgId, createTime, undefined, senderWxid)
+    }
   })
 
   aiReplyService.setDistillChatRecordFetcher(async (contactId: string, limit: number) => {
@@ -2222,14 +2309,55 @@ function registerIpcHandlers() {
     return salt
   }
 
+  const FAST_HANXIAOMI_DELIVERY_POLICY = {
+    minDelayMs: 0,
+    maxDelayMs: 0,
+    postSendGapMsMin: 0,
+    postSendGapMsMax: 0,
+    perContactCooldownMs: 0,
+    splitMinGapMs: 1000,
+    splitMaxGapMs: 1000
+  }
+
+  const LEGACY_HANXIAOMI_DELIVERY_POLICY = {
+    minDelayMs: 8000,
+    maxDelayMs: 45000,
+    postSendGapMsMin: 8000,
+    postSendGapMsMax: 25000,
+    perContactCooldownMs: 60000,
+    splitMinGapMs: 2500,
+    splitMaxGapMs: 8000
+  }
+
+  function migrateLegacyDelay(policy: any, key: keyof typeof FAST_HANXIAOMI_DELIVERY_POLICY) {
+    const current = Number(policy[key])
+    if (policy[key] === undefined || current === LEGACY_HANXIAOMI_DELIVERY_POLICY[key]) {
+      policy[key] = FAST_HANXIAOMI_DELIVERY_POLICY[key]
+    }
+  }
+
   function migrateHanxiaomiDeliveryPolicy(policy: any, version: number): any {
     const next = { ...(policy || {}) }
-    if (version >= 2) return next
-    if (next.splitMinGapMs === undefined || Number(next.splitMinGapMs) === 1800) next.splitMinGapMs = 2500
-    if (next.splitMaxGapMs === undefined || Number(next.splitMaxGapMs) === 6500) next.splitMaxGapMs = 8000
-    delete next.splitLongRepliesEnabled
-    delete next.splitMaxChars
-    delete next.splitMaxParts
+    if (version < 2) {
+      if (next.splitMinGapMs === undefined || Number(next.splitMinGapMs) === 1800) next.splitMinGapMs = 2500
+      if (next.splitMaxGapMs === undefined || Number(next.splitMaxGapMs) === 6500) next.splitMaxGapMs = 8000
+      delete next.splitLongRepliesEnabled
+      delete next.splitMaxChars
+      delete next.splitMaxParts
+    }
+    if (version < 3) {
+      migrateLegacyDelay(next, 'minDelayMs')
+      migrateLegacyDelay(next, 'maxDelayMs')
+      migrateLegacyDelay(next, 'postSendGapMsMin')
+      migrateLegacyDelay(next, 'postSendGapMsMax')
+      migrateLegacyDelay(next, 'perContactCooldownMs')
+      migrateLegacyDelay(next, 'splitMinGapMs')
+      migrateLegacyDelay(next, 'splitMaxGapMs')
+    }
+    if (version < 4) {
+      if (next.splitMinGapMs === undefined || Number(next.splitMinGapMs) === 0) next.splitMinGapMs = FAST_HANXIAOMI_DELIVERY_POLICY.splitMinGapMs
+      if (next.splitMaxGapMs === undefined || Number(next.splitMaxGapMs) === 0) next.splitMaxGapMs = FAST_HANXIAOMI_DELIVERY_POLICY.splitMaxGapMs
+    }
     return next
   }
 
@@ -2243,6 +2371,16 @@ function registerIpcHandlers() {
       hanxiaomiConfig.deliveryPolicy,
       Number(hanxiaomiConfig.humanSegmentPolicyVersion || 0)
     )
+    if (Number(hanxiaomiConfig.humanSegmentPolicyVersion || 0) < 4) {
+      configService?.set('aiReplyConfig' as any, {
+        ...cfg,
+        hanxiaomiChannel: {
+          ...hanxiaomiConfig,
+          humanSegmentPolicyVersion: 4,
+          deliveryPolicy
+        }
+      })
+    }
     aiReplyService.setHanxiaomiChannelConfig({
       enabled: Boolean(hanxiaomiConfig.enabled),
       serviceUrl: String(hanxiaomiConfig.serviceUrl || '').trim(),
@@ -2320,6 +2458,7 @@ function registerIpcHandlers() {
           keyId: channel.keyId,
           timeoutMs: channel.timeoutMs,
           inboundConcurrency: channel.inboundConcurrency,
+          humanSegmentPolicyVersion: 4,
           deliveryPolicy: channel.deliveryPolicy
         }
       })(),
@@ -2557,7 +2696,7 @@ function registerIpcHandlers() {
         keyId: normalized.keyId,
         timeoutMs: normalized.timeoutMs,
         inboundConcurrency: normalized.inboundConcurrency,
-        humanSegmentPolicyVersion: 2,
+        humanSegmentPolicyVersion: 4,
         deliveryPolicy: normalized.deliveryPolicy
       }
     })
@@ -5227,6 +5366,8 @@ app.whenReady().then(async () => {
   // 注册 IPC 处理器
   updateSplashProgress(28, '正在初始化...')
   registerIpcHandlers()
+  try { historySyncService.startScheduler() }
+  catch { console.warn('[HistorySync] 同步状态不可用，请在中台同步页面检查；其他功能可继续使用') }
   if (configService.get('autoDownloadHighRes')) {
     const whitelistArr = configService.get('autoDownloadWhitelist') || []
     const whitelistStr = (Array.isArray(whitelistArr) && whitelistArr.length > 0)
@@ -5253,39 +5394,7 @@ app.whenReady().then(async () => {
       console.warn('[StartupWarmup] 跳过预热，数据库连接失败:', reason)
       updateSplashProgress(68, '数据库预热已跳过')
     } else {
-      const preloadUsernames = new Set<string>()
-
-      updateSplashProgress(44, '正在预加载会话...')
-      const sessionsWarmup = await withTimeout(() => chatService.getSessions(), 12000)
-      if (!sessionsWarmup.timedOut && sessionsWarmup.value?.success && Array.isArray(sessionsWarmup.value.sessions)) {
-        for (const session of sessionsWarmup.value.sessions) {
-          const username = String((session as any)?.username || '').trim()
-          if (username) preloadUsernames.add(username)
-        }
-      }
-
-      updateSplashProgress(56, '正在预加载联系人...')
-      const contactsWarmup = await withTimeout(() => chatService.getContacts(), 15000)
-      if (!contactsWarmup.timedOut && contactsWarmup.value?.success && Array.isArray(contactsWarmup.value.contacts)) {
-        for (const contact of contactsWarmup.value.contacts) {
-          const username = String((contact as any)?.username || '').trim()
-          if (username) preloadUsernames.add(username)
-        }
-      }
-
-      updateSplashProgress(63, '正在缓存联系人头像...')
-      const avatarWarmupUsernames = Array.from(preloadUsernames).slice(0, 2000)
-      if (avatarWarmupUsernames.length > 0) {
-        await withTimeout(() => chatService.enrichSessionsContactInfo(avatarWarmupUsernames), 15000)
-      }
-
-      updateSplashProgress(68, '正在初始化消息库索引...')
-      await withTimeout(() => chatService.warmupMessageDbSnapshot(), 10000)
-
-      updateSplashProgress(69, '正在预加载导出统计...')
-      if (avatarWarmupUsernames.length > 0) {
-        await withTimeout(() => chatService.getExportSessionStats(avatarWarmupUsernames, { includeRelations: false }), 8000)
-      }
+      updateSplashProgress(69, '数据库已连接，按需加载会话')
     }
   } else {
     updateSplashProgress(68, '首次启动准备中...')

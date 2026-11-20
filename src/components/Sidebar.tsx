@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Home, MessageSquare, Settings, Aperture, UserCircle, Lock, LockOpen, ChevronUp, Users, Bot } from 'lucide-react'
+import { Home, MessageSquare, Settings, UserCircle, Lock, LockOpen, ChevronUp, Users, Bot, CloudUpload } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import * as configService from '../services/config'
 
@@ -310,16 +310,6 @@ function Sidebar({ collapsed }: SidebarProps) {
             <span className="nav-label">聊天</span>
           </NavLink>
 
-          {/* 朋友圈 */}
-          <NavLink
-            to="/sns"
-            className={`nav-item ${isActive('/sns') ? 'active' : ''}`}
-            title={collapsed ? '朋友圈' : undefined}
-          >
-            <span className="nav-icon"><Aperture size={20} /></span>
-            <span className="nav-label">朋友圈</span>
-          </NavLink>
-
           {/* 通讯录 */}
           <NavLink
             to="/contacts"
@@ -340,6 +330,10 @@ function Sidebar({ collapsed }: SidebarProps) {
           </NavLink>
 
 
+          <NavLink to="/history-sync" className={`nav-item ${isActive('/history-sync') ? 'active' : ''}`} title={collapsed ? '中台同步' : undefined}>
+            <span className="nav-icon"><CloudUpload size={20} /></span>
+            <span className="nav-label">中台同步</span>
+          </NavLink>
         </nav>
 
         <div className="sidebar-footer">

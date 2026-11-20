@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react'
 import { useChatStore } from '../stores/chatStore'
 import type { ChatSession, Message } from '../types/models'
 import { useNavigate } from 'react-router-dom'
-import { useSessionMetrics } from '../pages/Export/hooks/useSessionMetrics'
 import { buildNewMessagesCursor } from '../pages/Chat/messageCursor'
 
 export function GlobalSessionMonitor() {
@@ -77,12 +76,6 @@ export function GlobalSessionMonitor() {
         }
     }, [])
 
-    // 注意：导出统计的预加载已移除。
-    // 之前在这里预加载所有会话的统计到前端 zustand store，会导致启动时内存从 200MB 飙升到 500+MB。
-    // 后端 main.ts 启动时已经通过 getExportSessionStats 将统计结果缓存在主进程内存中，
-    // 导出页打开时会按需拉取当前可见批次的会话统计，后端缓存命中率很高，响应速度足够快。
-
-
     const refreshSessions = async () => {
         try {
             const result = await window.electronAPI.chat.getSessions()
@@ -95,10 +88,6 @@ export function GlobalSessionMonitor() {
 
                 // 2. 更新 store
                 setSessions(newSessions)
-
-                // 2.5 预加载导出相关的会话消息数量统计 (避免进入导出页面时显示为 0)
-                const sessionIds = newSessions.map(s => s.username)
-                useSessionMetrics.getState().fetchMetrics(sessionIds).catch(console.error)
 
                 // 3. 如果在活跃会话中，增量刷新消息
                 const currentId = useChatStore.getState().currentSessionId

@@ -14,7 +14,7 @@ export interface DeliveryPolicy {
   splitMaxGapMs: number
 }
 
-export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = {
+export const HUMAN_LIKE_DELIVERY_POLICY: DeliveryPolicy = {
   minDelayMs: 8000,
   maxDelayMs: 45000,
   postSendGapMsMin: 8000,
@@ -28,6 +28,22 @@ export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = {
   maxTypingDelayMs: 18000,
   splitMinGapMs: 2500,
   splitMaxGapMs: 8000
+}
+
+export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = {
+  minDelayMs: 0,
+  maxDelayMs: 0,
+  postSendGapMsMin: 0,
+  postSendGapMsMax: 0,
+  perContactCooldownMs: 0,
+  maxRetry: HUMAN_LIKE_DELIVERY_POLICY.maxRetry,
+  retryDelayMs: HUMAN_LIKE_DELIVERY_POLICY.retryDelayMs,
+  staleAfterMs: HUMAN_LIKE_DELIVERY_POLICY.staleAfterMs,
+  typingMsPerCharMin: 0,
+  typingMsPerCharMax: 0,
+  maxTypingDelayMs: 0,
+  splitMinGapMs: 1000,
+  splitMaxGapMs: 1000
 }
 
 const MAX_DELAY_MS = 24 * 60 * 60 * 1000

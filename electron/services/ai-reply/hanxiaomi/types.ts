@@ -49,6 +49,8 @@ export interface HanxiaomiContextMessage {
   content: string
   content_type: string
   sender_ref?: string
+  voice?: HanxiaomiVoiceAudioPayload
+  image?: HanxiaomiImagePayload
 }
 
 export interface HanxiaomiReplyRequest {
@@ -78,6 +80,47 @@ export interface HanxiaomiContextProvider {
   getContact(contactId: string): Promise<any>
   getLongProfile(contactId: string): Promise<string>
   getAccountId(): string
+  getVoiceAudio?(contactId: string, message: HanxiaomiVoiceTranscriptTarget): Promise<{
+    success: boolean
+    audioBase64?: string
+    format?: string
+    sampleRate?: number
+    durationSeconds?: number
+    error?: string
+  }>
+  getVoiceTranscript?(contactId: string, message: HanxiaomiVoiceTranscriptTarget): Promise<{ success: boolean; transcript?: string; error?: string }>
+  getImageData?(contactId: string, message: HanxiaomiVoiceTranscriptTarget): Promise<{
+    success: boolean
+    imageBase64?: string
+    mimeType?: string
+    imageUrl?: string
+    error?: string
+  }>
+}
+
+export interface HanxiaomiVoiceAudioPayload {
+  audio_base64: string
+  audio_format?: 'wav' | 'pcm'
+  sample_rate?: number
+  duration_seconds?: number
+}
+
+export interface HanxiaomiImagePayload {
+  image_base64?: string
+  mime_type?: 'image/jpeg' | 'image/png' | 'image/webp'
+  image_url?: string
+}
+
+export interface HanxiaomiVoiceTranscriptTarget {
+  msgId?: string
+  messageKey?: string
+  localId?: number | string
+  serverId?: number | string
+  serverIdRaw?: string
+  createTime?: number
+  timestamp?: number
+  senderId?: string
+  senderUsername?: string | null
 }
 
 export interface HanxiaomiContextBuildInput {

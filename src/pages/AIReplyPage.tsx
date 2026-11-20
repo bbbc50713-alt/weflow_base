@@ -770,6 +770,16 @@ function ModelsTab({ toast }: { toast: (msg: string, type?: 'success' | 'error' 
 }
 
 const HANXIAOMI_MAX_DELAY_MS = 24 * 60 * 60 * 1000
+const HANXIAOMI_FAST_DELIVERY_POLICY: Required<HanxiaomiDeliveryPolicyForm> = {
+  minDelayMs: 0,
+  maxDelayMs: 0,
+  postSendGapMsMin: 0,
+  postSendGapMsMax: 0,
+  perContactCooldownMs: 0,
+  staleAfterMs: 180000,
+  splitMinGapMs: 1000,
+  splitMaxGapMs: 1000
+}
 
 type HanxiaomiDeliveryPolicyForm = {
   minDelayMs?: number
@@ -796,12 +806,12 @@ function normalizeHanxiaomiDelayMs(
 function normalizeHanxiaomiDeliveryPolicyInput(
   policy?: HanxiaomiDeliveryPolicyForm
 ): Required<HanxiaomiDeliveryPolicyForm> {
-  const minDelayMs = normalizeHanxiaomiDelayMs(policy?.minDelayMs, 8000)
-  const maxDelayMs = Math.max(minDelayMs, normalizeHanxiaomiDelayMs(policy?.maxDelayMs, 45000))
-  const postSendGapMsMin = normalizeHanxiaomiDelayMs(policy?.postSendGapMsMin, 8000)
+  const minDelayMs = normalizeHanxiaomiDelayMs(policy?.minDelayMs, HANXIAOMI_FAST_DELIVERY_POLICY.minDelayMs)
+  const maxDelayMs = Math.max(minDelayMs, normalizeHanxiaomiDelayMs(policy?.maxDelayMs, HANXIAOMI_FAST_DELIVERY_POLICY.maxDelayMs))
+  const postSendGapMsMin = normalizeHanxiaomiDelayMs(policy?.postSendGapMsMin, HANXIAOMI_FAST_DELIVERY_POLICY.postSendGapMsMin)
   const postSendGapMsMax = Math.max(
     postSendGapMsMin,
-    normalizeHanxiaomiDelayMs(policy?.postSendGapMsMax, 25000)
+    normalizeHanxiaomiDelayMs(policy?.postSendGapMsMax, HANXIAOMI_FAST_DELIVERY_POLICY.postSendGapMsMax)
   )
 
   return {
@@ -809,12 +819,12 @@ function normalizeHanxiaomiDeliveryPolicyInput(
     maxDelayMs,
     postSendGapMsMin,
     postSendGapMsMax,
-    perContactCooldownMs: normalizeHanxiaomiDelayMs(policy?.perContactCooldownMs, 60000),
-    staleAfterMs: normalizeHanxiaomiDelayMs(policy?.staleAfterMs, 180000, 1000),
-    splitMinGapMs: normalizeHanxiaomiDelayMs(policy?.splitMinGapMs, 2500),
+    perContactCooldownMs: normalizeHanxiaomiDelayMs(policy?.perContactCooldownMs, HANXIAOMI_FAST_DELIVERY_POLICY.perContactCooldownMs),
+    staleAfterMs: normalizeHanxiaomiDelayMs(policy?.staleAfterMs, HANXIAOMI_FAST_DELIVERY_POLICY.staleAfterMs, 1000),
+    splitMinGapMs: normalizeHanxiaomiDelayMs(policy?.splitMinGapMs, HANXIAOMI_FAST_DELIVERY_POLICY.splitMinGapMs),
     splitMaxGapMs: Math.max(
-      normalizeHanxiaomiDelayMs(policy?.splitMinGapMs, 2500),
-      normalizeHanxiaomiDelayMs(policy?.splitMaxGapMs, 8000)
+      normalizeHanxiaomiDelayMs(policy?.splitMinGapMs, HANXIAOMI_FAST_DELIVERY_POLICY.splitMinGapMs),
+      normalizeHanxiaomiDelayMs(policy?.splitMaxGapMs, HANXIAOMI_FAST_DELIVERY_POLICY.splitMaxGapMs)
     )
   }
 }
@@ -858,6 +868,13 @@ function HanxiaomiChannelSection({ toast }: { toast: (msg: string, type?: 'succe
         ...(local.deliveryPolicy || {}),
         [key]: value
       }
+    })
+  }
+
+  const applyFastDeliveryPolicy = () => {
+    setLocal({
+      ...local,
+      deliveryPolicy: HANXIAOMI_FAST_DELIVERY_POLICY
     })
   }
 
@@ -942,8 +959,11 @@ function HanxiaomiChannelSection({ toast }: { toast: (msg: string, type?: 'succe
       <div className="hanxiaomi-draft-box">
         <div className="section-header compact">
           <h4>队列与发送节奏</h4>
+          <button className="btn btn-sm" onClick={applyFastDeliveryPolicy}>
+            <Zap size={12} /> 推荐节奏
+          </button>
         </div>
-        <p className="section-subtitle">控制汉小密生成并发和自动发送的随机等待、间隔、冷却与过期时间。</p>
+        <p className="section-subtitle">控制汉小密生成并发、自动发送等待、同联系人冷却、分段间隔与过期时间；拆分间隔只作用于汉小密一条回复拆成多条微信消息后的相邻发送，建议不低于 1000ms，保存后立即生效。</p>
         <div className="hanxiaomi-grid">
           <label className="sender-field">
             <span>生成并发</span>
@@ -960,7 +980,7 @@ function HanxiaomiChannelSection({ toast }: { toast: (msg: string, type?: 'succe
             <input
               type="number"
               min={0}
-              value={local.deliveryPolicy?.minDelayMs ?? 8000}
+              value={local.deliveryPolicy?.minDelayMs ?? HANXIAOMI_FAST_DELIVERY_POLICY.minDelayMs}
               onChange={e => updateDeliveryPolicy('minDelayMs', Number(e.target.value) || 0)}
             />
           </label>
@@ -969,7 +989,7 @@ function HanxiaomiChannelSection({ toast }: { toast: (msg: string, type?: 'succe
             <input
               type="number"
               min={0}
-              value={local.deliveryPolicy?.maxDelayMs ?? 45000}
+              value={local.deliveryPolicy?.maxDelayMs ?? HANXIAOMI_FAST_DELIVERY_POLICY.maxDelayMs}
               onChange={e => updateDeliveryPolicy('maxDelayMs', Number(e.target.value) || 0)}
             />
           </label>
@@ -978,7 +998,7 @@ function HanxiaomiChannelSection({ toast }: { toast: (msg: string, type?: 'succe
             <input
               type="number"
               min={0}
-              value={local.deliveryPolicy?.postSendGapMsMin ?? 8000}
+              value={local.deliveryPolicy?.postSendGapMsMin ?? HANXIAOMI_FAST_DELIVERY_POLICY.postSendGapMsMin}
               onChange={e => updateDeliveryPolicy('postSendGapMsMin', Number(e.target.value) || 0)}
             />
           </label>
@@ -987,7 +1007,7 @@ function HanxiaomiChannelSection({ toast }: { toast: (msg: string, type?: 'succe
             <input
               type="number"
               min={0}
-              value={local.deliveryPolicy?.postSendGapMsMax ?? 25000}
+              value={local.deliveryPolicy?.postSendGapMsMax ?? HANXIAOMI_FAST_DELIVERY_POLICY.postSendGapMsMax}
               onChange={e => updateDeliveryPolicy('postSendGapMsMax', Number(e.target.value) || 0)}
             />
           </label>
@@ -996,7 +1016,7 @@ function HanxiaomiChannelSection({ toast }: { toast: (msg: string, type?: 'succe
             <input
               type="number"
               min={0}
-              value={local.deliveryPolicy?.perContactCooldownMs ?? 60000}
+              value={local.deliveryPolicy?.perContactCooldownMs ?? HANXIAOMI_FAST_DELIVERY_POLICY.perContactCooldownMs}
               onChange={e => updateDeliveryPolicy('perContactCooldownMs', Number(e.target.value) || 0)}
             />
           </label>
@@ -1005,20 +1025,21 @@ function HanxiaomiChannelSection({ toast }: { toast: (msg: string, type?: 'succe
             <input
               type="number"
               min={1000}
-              value={local.deliveryPolicy?.staleAfterMs ?? 180000}
+              value={local.deliveryPolicy?.staleAfterMs ?? HANXIAOMI_FAST_DELIVERY_POLICY.staleAfterMs}
               onChange={e => updateDeliveryPolicy('staleAfterMs', Number(e.target.value) || 180000)}
             />
           </label>
           <div className="sender-field sender-field-note">
             <span>后台智能分段</span>
-            <p>回复由汉小密后端模型拆成 1-5 条自然微信消息；本地只控制分段之间的发送间隔，不再按标点或字数硬切。</p>
+            <p>回复由汉小密后端模型拆成 1-5 条自然微信消息；本地只控制这些消息之间的发送间隔，不改变发送前等待、同联系人冷却或回复过期时间。</p>
           </div>
           <label className="sender-field">
             <span>拆分最短间隔 ms</span>
             <input
               type="number"
               min={0}
-              value={local.deliveryPolicy?.splitMinGapMs ?? 2500}
+              step={100}
+              value={local.deliveryPolicy?.splitMinGapMs ?? HANXIAOMI_FAST_DELIVERY_POLICY.splitMinGapMs}
               onChange={e => updateDeliveryPolicy('splitMinGapMs', Number(e.target.value) || 0)}
             />
           </label>
@@ -1027,7 +1048,8 @@ function HanxiaomiChannelSection({ toast }: { toast: (msg: string, type?: 'succe
             <input
               type="number"
               min={0}
-              value={local.deliveryPolicy?.splitMaxGapMs ?? 8000}
+              step={100}
+              value={local.deliveryPolicy?.splitMaxGapMs ?? HANXIAOMI_FAST_DELIVERY_POLICY.splitMaxGapMs}
               onChange={e => updateDeliveryPolicy('splitMaxGapMs', Number(e.target.value) || 0)}
             />
           </label>

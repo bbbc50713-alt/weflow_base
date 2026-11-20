@@ -315,6 +315,7 @@ export type CloseConfirmPayload = {
 }
 
 export interface ElectronAPI {
+  historySync: import('../../shared/wechatHistory').HistorySyncApi
   window: {
     minimize: () => void
     maximize: () => void

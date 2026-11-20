@@ -285,7 +285,7 @@ exit 1
     if (!this.options.reuseActiveChat || attempt !== 1 || !this.lastSendContext) {
       return ''
     }
-    if (Date.now() - this.lastSendContext.sentAt > 5 * 60 * 1000) {
+    if (Date.now() - this.lastSendContext.sentAt > 8 * 1000) {
       this.lastSendContext = null
       return ''
     }
@@ -474,7 +474,7 @@ function Activate-WeChat {
 
   $handle = $wechat.MainWindowHandle
   [NativeMethods]::ShowWindow($handle, [NativeMethods]::SW_RESTORE) | Out-Null
-  Start-Sleep -Milliseconds 200
+  Start-Sleep -Milliseconds 100
 
   try {
     $shell = New-Object -ComObject WScript.Shell
@@ -482,7 +482,7 @@ function Activate-WeChat {
   } catch {}
 
   [NativeMethods]::SetForegroundWindow($handle) | Out-Null
-  Start-Sleep -Milliseconds 400
+  Start-Sleep -Milliseconds 150
 
   $foreground = [NativeMethods]::GetForegroundWindow()
   if ($foreground -ne $handle) {
@@ -497,11 +497,11 @@ function Activate-WeChat {
 function Click-Point {
   param([int]$X, [int]$Y)
   [NativeMethods]::SetCursorPos($X, $Y) | Out-Null
-  Start-Sleep -Milliseconds 80
+  Start-Sleep -Milliseconds 30
   [NativeMethods]::mouse_event([NativeMethods]::MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 60
+  Start-Sleep -Milliseconds 30
   [NativeMethods]::mouse_event([NativeMethods]::MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 180
+  Start-Sleep -Milliseconds 80
 }
 
 function Normalize-WindowHandle {
@@ -815,7 +815,7 @@ function Invoke-SendButton {
       $invokePattern = $null
       if ($button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invokePattern)) {
         $invokePattern.Invoke()
-        Start-Sleep -Milliseconds 700
+        Start-Sleep -Milliseconds 250
         Write-Step 'ClickSendButton' 'OK' 'Invoked send button via UIAutomation'
         return $true
       }
@@ -850,13 +850,13 @@ function Search-And-Navigate {
   try {
     Set-ClipboardText -Text $ContactName
     [System.Windows.Forms.SendKeys]::SendWait('^f')
-    Start-Sleep -Milliseconds 250
+    Start-Sleep -Milliseconds 160
     [System.Windows.Forms.SendKeys]::SendWait('^a')
-    Start-Sleep -Milliseconds 100
+    Start-Sleep -Milliseconds 60
     [System.Windows.Forms.SendKeys]::SendWait('^v')
-    Start-Sleep -Milliseconds 900
+    Start-Sleep -Milliseconds 550
     [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-    Start-Sleep -Milliseconds 1000
+    Start-Sleep -Milliseconds 650
     Write-Step 'SearchContact' 'OK' "Opened chat for '$ContactName'"
     return $true
   } catch {
@@ -877,7 +877,7 @@ function Send-Text {
   try {
     Set-ClipboardText -Text $Text
     [System.Windows.Forms.SendKeys]::SendWait('^v')
-    Start-Sleep -Milliseconds 350
+    Start-Sleep -Milliseconds 150
     Write-Step 'PasteText' 'OK' "Pasted text, length=$($Text.Length)"
   } catch {
     Write-Step 'PasteText' 'ERROR' $_.Exception.Message
@@ -888,7 +888,7 @@ function Send-Text {
 
   try {
     Invoke-SendHotkey -Hotkey $Hotkey
-    Start-Sleep -Milliseconds 900
+    Start-Sleep -Milliseconds 300
   } catch {
     Write-Step 'SendEnter' 'ERROR' $_.Exception.Message
     return $false
@@ -905,7 +905,7 @@ function Send-Text {
     try {
       $fallbackHotkey = if ($Hotkey -eq 'ctrl-enter') { 'enter' } else { 'ctrl-enter' }
       Invoke-SendHotkey -Hotkey $fallbackHotkey
-      Start-Sleep -Milliseconds 800
+      Start-Sleep -Milliseconds 300
       Write-Step 'SendFallback' 'WARNING' "Input still had text after $Hotkey, tried $fallbackHotkey"
     } catch {}
   }
@@ -972,6 +972,7 @@ try {
 
   $focusBeforeNavigation = Get-FocusSignature
   $activeChatBeforeNavigation = Get-ActiveChatTitle -WindowHandle $mainWindow
+  $didNavigate = $false
   if ($activeChatBeforeNavigation) {
     Write-Step 'ActiveChat' 'OK' $activeChatBeforeNavigation
   }
@@ -986,11 +987,18 @@ try {
     $ExpectedFocusSignature -and
     (Test-ContactTitleMatch -ContactName $ContactName -ChatTitle $activeChatBeforeNavigation)
   )
+  $canSkipByRecentSameTarget = (
+    $AllowSkipSearch -eq 'true' -and
+    $ExpectedFocusSignature -and
+    -not $activeChatBeforeNavigation
+  )
 
   if ($canSkipByFocus) {
     Write-Step 'SearchContact' 'OK' 'Skipped contact search; focus unchanged from previous send'
   } elseif ($canSkipByActiveChat) {
     Write-Step 'SearchContact' 'OK' "Skipped contact search; active chat is still '$activeChatBeforeNavigation'"
+  } elseif ($canSkipByRecentSameTarget) {
+    Write-Step 'SearchContact' 'WARNING' 'Skipped contact search; reusing previous send target'
   } else {
     if ($AllowSkipSearch -eq 'true' -and $ExpectedFocusSignature) {
       $reason = 'Focus changed since previous send'
@@ -1002,10 +1010,13 @@ try {
       Write-Step 'SearchContact' 'WARNING' "$reason; searching contact again"
     }
     if (-not (Search-And-Navigate -ContactName $ContactName)) { exit 1 }
+    $didNavigate = $true
   }
 
-  $mainWindow = Normalize-WindowHandle -Handle (Activate-WeChat)
-  if ($mainWindow -eq [IntPtr]::Zero) { exit 1 }
+  if ($didNavigate) {
+    $mainWindow = Normalize-WindowHandle -Handle (Activate-WeChat)
+    if ($mainWindow -eq [IntPtr]::Zero) { exit 1 }
+  }
 
   if (-not (Send-Text -Text $Text -WindowHandle $mainWindow -Hotkey $SendHotkey)) { exit 1 }
 

@@ -436,6 +436,7 @@ class ChatService {
   private visibilityAnomalyLogState = new Map<string, { windowStart: number; total: number; suppressed: number }>()
   private readonly contactLabelNameMapCacheTtlMs = 10 * 60 * 1000
   private contactsLoadInFlight: { mode: 'lite' | 'full'; promise: Promise<{ success: boolean; contacts?: ContactInfo[]; error?: string }> } | null = null
+  private sessionsLoadInFlight: Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }> | null = null
   private contactsMemoryCache = new Map<'lite' | 'full', { scope: string; updatedAt: number; contacts: ContactInfo[] }>()
   private readonly contactsMemoryCacheTtlMs = 3 * 60 * 1000
   private readonly contactDisplayNameCollator = new Intl.Collator('zh-CN')
@@ -507,6 +508,7 @@ class ChatService {
   }
 
   private toCodeOnlyMessage(rawMessage?: string | null, fallbackCode = -3999): string {
+    if (rawMessage?.startsWith('独立读取器：')) return rawMessage
     const code = this.extractErrorCode(rawMessage) ?? fallbackCode
     return `错误码: ${code}`
   }
@@ -822,6 +824,22 @@ class ChatService {
    * 获取会话列表（优化：先返回基础数据，不等待联系人信息加载）
    */
   async getSessions(): Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }> {
+    if (this.sessionsLoadInFlight) {
+      return this.sessionsLoadInFlight
+    }
+
+    const task = this.loadSessions()
+    this.sessionsLoadInFlight = task
+    try {
+      return await task
+    } finally {
+      if (this.sessionsLoadInFlight === task) {
+        this.sessionsLoadInFlight = null
+      }
+    }
+  }
+
+  private async loadSessions(): Promise<{ success: boolean; sessions?: ChatSession[]; error?: string }> {
     try {
       const connectResult = await this.ensureConnected()
       if (!connectResult.success) {
@@ -966,7 +984,9 @@ class ChatService {
       }
 
       await this.addMissingOfficialSessions(sessions, myWxid)
-      await this.applySyntheticUnreadCounts(sessions)
+      // On the independent reader, the session DB is authoritative for the list.
+      // Reconstructing unread counts per official account opens all history shards.
+      if (!(process.platform === 'win32' && process.arch === 'x64')) await this.applySyntheticUnreadCounts(sessions)
       sessions.sort((a, b) => Number(b.sortTimestamp || b.lastTimestamp || 0) - Number(a.sortTimestamp || a.lastTimestamp || 0))
 
       // 不等待联系人信息加载，直接返回基础会话列表
@@ -1184,7 +1204,7 @@ class ChatService {
   private async addMissingOfficialSessions(sessions: ChatSession[], myWxid?: string): Promise<void> {
     const existing = new Set(sessions.map((session) => String(session.username || '').trim()).filter(Boolean))
     try {
-      const contactResult = await wcdbService.getContactsCompact()
+      const contactResult = await wcdbService.getSessionListSupplement()
       if (!contactResult.success || !Array.isArray(contactResult.contacts)) return
 
       for (const row of contactResult.contacts as Record<string, any>[]) {
