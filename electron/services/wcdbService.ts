@@ -65,6 +65,10 @@ export class WcdbService {
     }
   }
 
+  historyReadGeneration(): number {
+    return this.opening
+  }
+
   historyReaderCount(): number {
     if (!this.worker || !this.connection) return 0
     return 1 + [...this.helpers.values()].filter(h=>h.service.connection && h.service.worker).length
@@ -85,17 +89,18 @@ export class WcdbService {
       }
     }
     // Bound the worst-case private copies across all lanes. Underestimate spare space deliberately.
-    const lanes=Math.max(1,Math.min(16, Math.floor((available.bavail*available.bsize - 4*1024**3)/Math.max(bytes,1))))
+    const lanes=Math.max(1,Math.min(120, Math.floor((available.bavail*available.bsize - 4*1024**3)/Math.max(bytes,1))))
     this.diskCapacity={at:Date.now(),lanes}
     return lanes
   }
 
   // Cursor IDs and sqlite connections stay local to the selected worker.
-  async historyReader(): Promise<WcdbService> {
+  async historyReader(target = 16): Promise<WcdbService> {
     const account=this.connection, root=this.userDataPath, resources=this.resourcesPath
     if (this.secondary || !account || !root || !resources || process.platform!=='win32' || process.arch!=='x64' ||
         freemem()<Math.max(1024**3,totalmem()*0.12)) return this
-    const lane=this.readTurn++ % (this.diskCapacity && Date.now()-this.diskCapacity.at<60000 ? this.diskCapacity.lanes : 16)
+    const allowed = Math.min(120,Math.max(1,target),this.diskCapacity && Date.now()-this.diskCapacity.at<60000 ? this.diskCapacity.lanes : 120)
+    const lane=this.readTurn++ % allowed
     if (!lane) return this
     let helper=this.helpers.get(lane)
     if (!helper) {

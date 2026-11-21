@@ -32,7 +32,19 @@ export interface SessionProgress {
   existing?: number
 }
 export interface HistoryStatus {
+  detaching?: boolean
+  detachReason?: 'account-change' | 'manual'
+  revocationsPending?: number
+  recovering?: boolean
+  startEstimated?: boolean
+  startedAt?: number
+  finishedAt?: number
+  retryAfter?: number
+  feedbackLabel?: string
+  sendLimit?: number
   legacyRecovery?: {runId:string;checked:number;previousScanned:number; reportConfirmed?:number; reportPending?:number; reportPeers?:number; restoredPeers?:number; restoredMessages?:number; checkingReport?:boolean; planned?:number; examined?:number}
+  batchRows?: number
+  batchBytes?: number
   readerCount?: number
   activeReaders?: number
   activeChecks?: number
@@ -92,6 +104,7 @@ export interface WechatHistoryMessageV1 {
 }
 
 export interface ServerTransferMetrics {
+  started_at?:string; effective_slots?:number|null; free_slots?:number|null
   run_id:string; queue_enabled:boolean; accepted_batches:number; committed_batches:number
   queued_batches:number; processing:number; failed_batches:number; worker_limit:number|null; oldest_seconds:number
   inserted:number; matched:number; issues:number; processed_per_minute:number; inserted_per_minute:number; sampled_at:string

@@ -16,6 +16,14 @@ let waitForWave
 const serverRows = new Map()
 const receipts = new Map()
 let runStatus = 'running'
+let bindingId = 0
+let offlineDetach = false
+const revoked = []
+function activeStorage() {
+  const root = path.join(dir, 'history-sync')
+  const { storageId } = JSON.parse(fs.readFileSync(path.join(root, 'state.json'), 'utf8'))
+  return storageId ? path.join(root, 'profiles', storageId) : root
+}
 
 function row(id, time = 1577836800, self = false) {
   return { local_id: id, server_id: (9223372036854775700n + BigInt(id)).toString(), local_type: 1,
@@ -56,7 +64,17 @@ global.fetch = async (url, options) => {
   const body = options.body ? JSON.parse(options.body) : undefined
   let data
   if (pathname.endsWith('/bindings') && options.method === 'POST') {
-    data = { id: 1, tenant_id: 11, tenant_name: '测试租户', channel_account_id: 29, account_name: '测试微信', account_wxid: state.owner, account_status: 'unbound', token: 'only-a-test-token' }
+    const id = ++bindingId
+    data = { id, tenant_id: 11, tenant_name: '测试租户', channel_account_id: body.account_wxid === 'wxid_other' ? 30 : 29, account_name: '测试微信', account_wxid: body.account_wxid, account_status: 'unbound', token: 'test-token-' + id }
+  } else if (pathname.endsWith('/detach')) {
+    if (offlineDetach) throw new TypeError('offline')
+    revoked.push(options.headers.Authorization)
+    data = { revoked: true }
+  } else if (pathname.endsWith('/reattach')) {
+    data = { id: pathname.split('/').at(-2), status: runStatus }
+  } else if (pathname.endsWith('/receipt')) {
+    const receipt = receipts.get(pathname.split('/').at(-2))
+    data = receipt ? { state: 'committed', receipt } : { state: 'absent' }
   } else if (pathname.endsWith('/bindings/current')) data = { conflicts: [], binding: {} }
   else if (pathname.endsWith('/runs') && options.method === 'POST') { data = { id: 'run-1', status: 'running' }; runStatus = 'running' }
   else if (pathname.endsWith('/batches')) {
@@ -80,7 +98,8 @@ global.fetch = async (url, options) => {
       data = { batch_id:body.batch_id, inserted: items.filter(x => x.outcome === 'inserted').length, existing: items.filter(x => x.outcome === 'existing').length, failed: 0, items }
       receipts.set(body.batch_id, data)
     }
-  } else if (pathname.endsWith('/reconcile')) {
+  } else if (pathname.endsWith('/report')) data={id:'run-1',partitions:[]}
+  else if (pathname.endsWith('/reconcile')) {
     const missing = body.source_keys.filter(k => !serverRows.has(body.session_wxid + ':' + k))
     const hash=s=>require('node:crypto').createHash('sha256').update(s).digest('hex')
     data = { expected: body.source_keys.length, matched: body.source_keys.length - missing.length, missing,
@@ -118,13 +137,35 @@ async function settle(service) {
     const built = await esbuild.build({absWorkingDir:root,entryPoints:['electron/services/history-sync/adaptivePool.ts'],bundle:true,platform:'node',format:'cjs',write:false})
     const poolModule = new Module('adaptive-limit-test',module)
     poolModule._compile(built.outputFiles[0].text,'adaptive-limit-test.cjs')
-    const {AdaptiveLimit,runPool} = poolModule.exports
+    const {AdaptiveLimit,runPool,AdaptiveBatch} = poolModule.exports
+    const pacing = new poolModule.exports.ServerPacing()
+    assert.equal(pacing.observe({effective_slots:8,free_slots:6,queued_batches:0,oldest_seconds:1,processed_per_minute:200},1000),'room')
+    assert.equal(pacing.limit,9)
+    assert.equal(pacing.observe({effective_slots:8,free_slots:0,queued_batches:6,oldest_seconds:12,processed_per_minute:60},2000),'busy')
+    assert.equal(pacing.limit,4)
+    pacing.observe({effective_slots:0,free_slots:0,queued_batches:2,oldest_seconds:3,processed_per_minute:0},3000)
+    assert.equal(pacing.limit,0);assert(!pacing.fresh(35000))
+    const target=new AdaptiveBatch()
+    for(let i=0;i<3;i++)target.acknowledged(128,100000,100,'low',1000)
+    assert.equal(target.rows,192)
+    target.backoff(1100);target.backoff(1200)
+    assert.equal(target.rows,96)
+    for(let i=0;i<5;i++)target.acknowledged(96,80000,100,'low',2000)
+    assert.equal(target.rows,96)
+    for(let i=0;i<60;i++)target.acknowledged(target.rows,target.bytes,100,'low',40000+i*5001)
+    assert.equal(target.rows,500);assert.equal(target.bytes,1900000)
+    for(let i=0;i<10;i++)target.backoff(500000+i*5001)
+    assert.equal(target.rows,32);assert.equal(target.bytes,131072)
     const regulator = new AdaptiveLimit()
     assert.equal(regulator.limit,16)
     for(let i=0;i<10;i++)regulator.sample('high')
     assert.equal(regulator.limit,6)
-    for(let i=0;i<35;i++)regulator.sample('low')
-    assert.equal(regulator.limit,16)
+    for(let i=0;i<180;i++)regulator.sample('low')
+    assert.equal(regulator.limit,120)
+    regulator.congested();assert.equal(regulator.limit,60)
+    regulator.congested();assert.equal(regulator.limit,60)
+    for(let i=0;i<15;i++)regulator.sample('low')
+    assert.equal(regulator.limit,60)
     const adaptive=new AdaptiveLimit(), gates=[], seen=new Set(), peakLimits=[]
     const queued=runPool(Array.from({length:32},(_,i)=>i),async i=>{
       seen.add(i); await new Promise(resolve=>gates.push(resolve))
@@ -150,19 +191,15 @@ async function settle(service) {
     await svc.pause()
     const restored = new HistorySyncService(); assert.equal(restored.status().status, 'paused')
     await restored.tick(); assert.equal(serverRows.size, 2)
-    // Changed owner cannot resume a different account's import.
-    state.owner = 'wxid_other'
-    await assert.rejects(() => restored.resume(), /不同/)
-    state.owner = 'wxid_owner'
     state.rows.push(row(3, 1577836801))
     failUpload = true
     await restored.resume(); await settle(restored)
     assert.equal(restored.status().status, 'offline')
-    assert.equal(fs.readdirSync(path.join(dir, 'history-sync')).some(f => /^batch.*\.json$/.test(f)), true)
+    assert.equal(fs.readdirSync(activeStorage()).some(f => /^batch.*\.json$/.test(f)), true)
     failUpload = false
     const restarted = new HistorySyncService(); restarted.status(); await restarted.resume(); await settle(restarted)
     assert.equal(serverRows.size, 3)
-    assert.equal(fs.readdirSync(path.join(dir, 'history-sync')).some(f => /^batch.*\.json$/.test(f)), false)
+    assert.equal(fs.readdirSync(activeStorage()).some(f => /^batch.*\.json$/.test(f)), false)
     // Old phone history arriving behind the watermark is found by daily reconciliation.
     state.rows.push(row(4, 946684800))
     await assert.rejects(() => restarted.rescan(), /暂停/)
@@ -173,7 +210,7 @@ async function settle(service) {
     const getSessions = global.__historyMock.chat.chatService.getSessions
     global.__historyMock.chat.chatService.getSessions = async () => ({ success: false, error: '错误码: -101' })
     await restarted.resume(); await settle(restarted)
-    assert.equal(restarted.status().status, 'paused')
+    assert.equal(restarted.status().status, 'offline');assert.equal(restarted.state.active,true)
     assert.match(restarted.status().error, /读取组件/)
     assert.equal(serverRows.size, 4)
     global.__historyMock.chat.chatService.getSessions = getSessions
@@ -206,13 +243,13 @@ async function settle(service) {
     await restarted.start(scoped); await settle(restarted)
     clearTimeout(waveTimeout);waitForWave=null
     assert.equal(peak,16)
-    assert.equal(fs.readdirSync(path.join(dir,'history-sync')).filter(f=>f.startsWith('batch-')).length,16)
+    assert.equal(fs.readdirSync(activeStorage()).filter(f=>f.startsWith('batch-')).length,16)
     failUpload=false
     const recovered = new HistorySyncService(); recovered.status(); await recovered.resume(); await settle(recovered)
     assert.equal(recovered.status().progressPhase,'done')
     assert(recovered.status().sessionProgress.every(p => p.total===1 && p.processed===1 && p.phase==='done'))
     assert.equal([...serverRows.values()].filter(m=>m.local_id==='21').length,16)
-    assert(!fs.readdirSync(path.join(dir,'history-sync')).some(f=>f.startsWith('batch-')))
+    assert(!fs.readdirSync(activeStorage()).some(f=>f.startsWith('batch-')))
     await recovered.pause()
     global.__historyMock.chat.chatService.getSessions=fourSessions
     const wc = global.__historyMock.wcdb.wcdbService
@@ -235,7 +272,8 @@ async function settle(service) {
     const tasks = recovered.status().sessionProgress
     assert.deepEqual(tasks.map(t=>t.phase),['failed','done','skipped','done'])
     assert.match(tasks[0].issue,/分片/); assert.equal(tasks[1].inserted,1)
-    assert.equal(recovered.status().status,'partial')
+    assert.equal(recovered.status().status,'offline');assert.equal(recovered.state.active,true)
+    await recovered.pause()
     global.__historyMock.chat.chatService.getSessions = async () => { throw Error('must not enumerate account for selected IDs') }
     let release
     const gate = new Promise(r=>{release=r}), events=[]
@@ -260,7 +298,7 @@ async function settle(service) {
     wc.openMessageCursor=async (id,size,asc,start,end)=>{
       const cursor=++state.cursor
       if (!blocked) recoveredOpens.push([id,start])
-      state.cursors.set(cursor,{id,rows:(id===peerA?[row(800,same)]:[row(810,same-2),row(811,same),row(812,same),row(813,same),row(814,same+1)].map(r=>({...r,message_content:'x'.repeat(340000)}))).filter(r=>r.create_time>=start && r.create_time<=end)})
+      state.cursors.set(cursor,{id,rows:(id===peerA?[row(800,same)]:[row(810,same-2),row(811,same),row(812,same),row(813,same),row(814,same+1)].map(r=>({...r,message_content:'x'.repeat(115000)}))).filter(r=>r.create_time>=start && r.create_time<=end)})
       return {success:true,cursor}
     }
     wc.fetchMessageBatch=async cursor=>{
@@ -347,7 +385,7 @@ async function settle(service) {
     assert.deepEqual(sent,['813','814']);assert(recoveredOpens.every(([id])=>id===peerB));assert.equal(recoveredAgain.status().legacyRecovery.restoredPeers,1)
     assert.equal(recoveredAgain.status().legacyRecovery.checked,3);assert.equal(recoveredAgain.status().completedSessions,2)
     assert.equal(new HistorySyncService().status().legacyRecovery.checked,3)
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'history-sync','state.pre-5.0.5.json'),'utf8')),old)
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'history-sync','state.pre-5.0.5.json'),'utf8')), Object.fromEntries(Object.entries(old).filter(([key]) => key !== 'encryptedToken')))
     // The normal live path reads each session once and can coalesce multiple SQLite pages.
     const bigPeer='coalesced-session'
     let scanCursor = 0
@@ -366,7 +404,7 @@ async function settle(service) {
       return originalFetch(url,opts)
     }
     await recoveredAgain.start({...options,sessions:[bigPeer],kinds:['text'],continuous:false});await settle(recoveredAgain)
-    assert.deepEqual(pageSizes,[500,5]);assert.equal(afterWriteLookups,0)
+    assert.equal(pageSizes[0],128);assert.equal(pageSizes.reduce((n,r)=>n+r,0),505);assert(pageSizes.every(n=>n>0 && n<=500));assert.equal(afterWriteLookups,0)
     assert.equal(scanCursor,1)
     assert.equal(recoveredAgain.status().sessionProgress[0].processed,505)
     assert.equal(recoveredAgain.status().activeUploads,0)
@@ -391,6 +429,108 @@ async function settle(service) {
     await recoveredAgain.resume();await settle(recoveredAgain)
     assert.equal(recoveredAgain.status().status,'completed')
     assert.equal(badPosts,1)
+    rawRows=[row(9992,same)]
+    let timeoutPosts=0
+    global.fetch=async(url,opts)=>{
+      const pathname=new URL(url).pathname
+      if(pathname.endsWith('/receipt'))return new Response(JSON.stringify({data:{state:'committed',receipt:receipts.get(pathname.split('/').at(-2))}}))
+      const res=await originalFetch(url,opts)
+      if(pathname.endsWith('/batches')){timeoutPosts++;return new Response(JSON.stringify({detail:{code:'INBOX_PENDING',message:'批次已接收'}}),{status:503})}
+      return res
+    }
+    await recoveredAgain.start({...options,sessions:['delayed-receipt'],kinds:['text'],continuous:false});await settle(recoveredAgain)
+    assert.equal(timeoutPosts,1);assert.equal(recoveredAgain.status().inserted,1)
+    assert.equal(recoveredAgain.pendingFiles().length,0)
+    // A transient reader failure must remain resumable by the scheduler, without calling resume().
+    const oldList=global.__historyMock.chat.chatService.getSessions
+    let available=false
+    global.__historyMock.chat.chatService.getSessions=async()=>available?{success:true,sessions:[]}:{success:false,error:'busy'}
+    const automatic=new HistorySyncService(); automatic.status()
+    await automatic.start({...options,sessions:[],continuous:false});await settle(automatic)
+    assert.equal(automatic.status().status,'offline');assert.equal(automatic.state.active,true)
+    available=true;automatic.retryAt=0;await automatic.tick();await settle(automatic)
+    assert.equal(automatic.status().status,'completed');assert(automatic.status().finishedAt>=automatic.status().startedAt)
+    global.__historyMock.chat.chatService.getSessions=oldList
+    // The receiver commits an upload just as the local account changes. The lost
+    // response must remain recoverable under A without appearing under B.
+    global.fetch = originalFetch
+    const oldCredential = 'Bearer test-token-' + automatic.status().binding.id
+    const originalDataset = automatic.state.datasetId
+    rawRows = [row(9993, same)]
+    let commit
+    const committed = new Promise(resolve => { commit = resolve })
+    let releaseReceipt
+    const held = new Promise(resolve => { releaseReceipt = resolve })
+    let lostReceiptPosts = 0
+    global.fetch = async (url, http) => {
+      const response = await originalFetch(url, http)
+      if (new URL(url).pathname.endsWith('/batches')) {
+        lostReceiptPosts++
+        commit()
+        await held
+        throw http.signal.reason
+      }
+      return response
+    }
+    await automatic.start({ ...options, sessions: ['switch-during-upload'], continuous: false })
+    await committed
+    offlineDetach = true
+    state.owner = 'wxid_other'
+    assert.equal(automatic.status().detaching, true)
+    assert.equal(automatic.status().binding, undefined)
+    releaseReceipt()
+    await settle(automatic)
+    assert.equal(automatic.status().revocationsPending, 1)
+    assert.equal(automatic.status().runId, undefined)
+    const switched = new HistorySyncService()
+    assert.equal(switched.status().status, 'unbound')
+    await switched.bind('http://127.0.0.1:8100', 'test-binding-code-long-enough')
+    assert.equal(switched.status().binding.channel_account_id, 30)
+    assert.equal(switched.status().scanned, 0)
+    assert.notEqual(switched.state.datasetId, originalDataset)
+    const secondCredential = 'Bearer test-token-' + switched.status().binding.id
+    state.owner = 'wxid_owner'
+    assert.equal(switched.status().binding, undefined)
+    await switched.bind('http://127.0.0.1:8100', 'test-binding-code-long-enough')
+    const reboundCredential = 'Bearer test-token-' + switched.status().binding.id
+    assert.equal(switched.status().recovering, true)
+    assert.equal(switched.status().status, 'paused')
+    assert.equal(switched.state.datasetId, originalDataset)
+    assert.equal(switched.pendingFiles().length, 1)
+    offlineDetach = false
+    global.fetch = originalFetch
+    await switched.revokeDetachedBindings()
+    assert.equal(switched.status().revocationsPending, 0)
+    assert(revoked.includes(oldCredential) && revoked.includes(secondCredential))
+    assert(!revoked.includes(reboundCredential))
+    await switched.resume()
+    await settle(switched)
+    assert.equal(switched.status().status, 'completed')
+    assert.equal(switched.status().inserted, 1)
+    assert.equal(switched.pendingFiles().length, 0)
+    assert.equal(lostReceiptPosts, 1)
+
+    // A slow native read cannot hold up starting a binding for the next account.
+    const originalRead = wc.fetchMessageBatch
+    let readStarted, finishRead
+    const reading = new Promise(resolve => { readStarted = resolve })
+    const nativeResult = new Promise(resolve => { finishRead = resolve })
+    wc.fetchMessageBatch = async () => {
+      readStarted()
+      return nativeResult
+    }
+    await switched.start({ ...options, sessions: ['manual-detach'], continuous: true })
+    await reading
+    assert.equal((await switched.unbind()).binding, undefined)
+    await settle(switched)
+    assert.equal(switched.status().detachReason, 'manual')
+    state.owner = 'wxid_other'
+    await switched.bind('http://127.0.0.1:8100', 'test-binding-code-long-enough')
+    finishRead({ success: true, rows: [row(9994, same)], hasMore: false })
+    wc.fetchMessageBatch = originalRead
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(switched.status().binding.channel_account_id, 30)
+    assert.equal(switched.status().scanned, 0)
     console.log('History sync tests passed: identity, both directions, replay, pause, account change, crash recovery, old-history reconciliation')
   } finally {
     global.fetch = oldFetch; global.__historyMock = oldMock

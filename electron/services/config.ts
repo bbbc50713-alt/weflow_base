@@ -168,6 +168,18 @@ const LOCKABLE_NUMBER_KEYS: Set<string> = new Set(['imageXorKey'])
 export class ConfigService {
   private static instance: ConfigService
   private store!: Store<ConfigSchema>
+  private historyAccountListeners = new Set<() => void>()
+
+  onHistoryAccountChange(listener: () => void): void {
+    this.historyAccountListeners.add(listener)
+  }
+
+  private notifyHistoryAccountChange(): void {
+    for (const listener of this.historyAccountListeners) {
+      try { listener() }
+      catch { console.warn('[HistorySync] 未能保存同步账号切换状态') }
+    }
+  }
 
   // 锁定模式运行时状态
   private unlockedKeys: Map<string, any> = new Map()
@@ -404,6 +416,7 @@ export class ConfigService {
     }
 
     this.store.set(key, toStore)
+    if (key === 'myWxid') this.notifyHistoryAccountChange()
   }
 
   // === 加密/解密工具 ===
@@ -1089,5 +1102,6 @@ export class ConfigService {
     this.store.clear()
     this.unlockedKeys.clear()
     this.unlockPassword = null
+    this.notifyHistoryAccountChange()
   }
 }

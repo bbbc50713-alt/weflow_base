@@ -48,7 +48,7 @@ window.__testPromise=(async()=>{
  assert(sessionCalls===0,'reopening offline sync retried native reader')
  await act(async()=>{useAppStore.getState().setDbConnected(true);await new Promise(r=>setTimeout(r,20))})
  assert(sessionCalls===1,'connected sync should load sessions once')
- const running={...await window.electronAPI.historySync.status(),runId:'review-test',initialScanComplete:true,binding:{account_name:'测试微信'},status:'running',inserted:31}
+ const running={...await window.electronAPI.historySync.status(),runId:'review-test',initialScanComplete:true,binding:{id:1,account_name:'测试微信'},status:'running',inserted:31}
  Object.assign(running,{progressPhase:'done',sessionProgress:[{id:'peer',name:'测试会话',group:false,total:31,processed:31,failed:0,phase:'done'}]})
  window.electronAPI.historySync.metrics=async()=>({runId:running.runId,clientPending:2,clientAcknowledged:3,bytesPerSecond:2048,
    server:{accepted_batches:12,committed_batches:9,queued_batches:2,processing:1,worker_limit:6,failed_batches:0,oldest_seconds:1,inserted:31,processed_per_minute:25,inserted_per_minute:10,sampled_at:'2026-11-20T00:00:00Z',queue_enabled:true}})
@@ -69,6 +69,7 @@ window.__testPromise=(async()=>{
  assert(document.querySelector('section[aria-label="上传与中台队列"]').textContent.includes('2.0 KiB/s'),'missing client transfer speed')
  assert(document.querySelector('section[aria-label="上传与中台队列"]').textContent.includes('已消费 9 批'),'missing server receipt metrics')
  assert(document.querySelector('[aria-label="已核实会话占比"]').value===1,'server-confirmed session completion metric missing')
+ assert(document.querySelector('[aria-label="任务用时"]').textContent.includes('预计剩余'),'clock missing')
  assert(panel().textContent.includes('本次新增 31 条') && panel().textContent.includes('持续补齐已开启'),'missing persistent result')
  assert(document.querySelectorAll('.toast-item').length===1,'missing completion notification')
  await act(async()=>emitStatus({...running,existing:15}))
@@ -86,6 +87,16 @@ window.__testPromise=(async()=>{
  assert(document.activeElement.textContent==='同步范围','range editor not reached')
  await act(async()=>btn('按原范围继续').click())
  assert(btn('暂停同步'),'original task did not resume')
+
+ const detached={...await window.electronAPI.historySync.status(),detachReason:'manual',revocationsPending:1}
+ let unbindCalls=0
+ window.electronAPI.historySync.unbind=async()=>{unbindCalls++;return detached}
+ const unbind=Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='停止同步并解除绑定')
+ assert(unbind && !unbind.disabled,'unbind disabled during upload')
+ await act(async()=>unbind.click())
+ assert(unbindCalls===1 && !panel(),'old task is still the active selection')
+ const connections=document.querySelector('.sync-binding').parentElement.textContent
+ assert(connections.includes('进度已保留') && connections.includes('等待中台确认撤销'),'local and remote detach states missing')
 
  await click('link/chat')
  assert(pageMounts===1 && document.querySelector('#data-page'),'connected route still blocked')

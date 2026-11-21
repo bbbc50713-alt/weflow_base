@@ -48,3 +48,8 @@
   .sync-contact-progress span:first-child {flex:1 1 130px; overflow-wrap:anywhere;}
   .sync-contact-progress progress {width:clamp(80px,26%,260px); height:10px;}
 }
+
+.history-sync-page .sync-clock {
+  display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 10px 0;
+  strong { font-variant-numeric: tabular-nums; }
+}

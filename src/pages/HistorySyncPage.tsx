@@ -8,7 +8,47 @@ import { allHistoryKinds, historyKinds } from '../../shared/historyKinds'
 import { useAppStore } from '../stores/appStore'
 
 const labels: Record<HistoryStatus['status'], string> = {
-  unbound: '尚未绑定', idle: '已绑定', running: '正在同步', paused: '已暂停', offline: '等待连接恢复', partial: '部分完成', completed: '同步完成',
+  unbound: '尚未绑定', idle: '已绑定', running: '正在同步', paused: '已暂停', offline: '等待自动重试', partial: '部分完成', completed: '同步完成',
+}
+
+function duration(ms:number) {
+  const seconds=Math.max(0,Math.floor(ms/1000))
+  return [Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(n=>String(n).padStart(2,'0')).join(':')
+}
+
+function RunClock({status}:{status: HistoryStatus}) {
+  const [now,setNow]=useState(Date.now)
+  const samples=useRef<Array<{at:number;n:number}>>([])
+  const finished=status.finishedAt
+  const ended=!!finished || status.status==='completed' || status.status==='partial'
+  const running=status.status==='running' && !status.initialScanComplete && !status.legacyRecovery?.checkingReport
+  const total=status.sessionProgress?.length || status.totalSessions
+  const completed=status.completedSessions
+  useEffect(()=>{
+    samples.current=[]
+    setNow(Date.now())
+    if (ended) return
+    const timer=setInterval(()=>setNow(Date.now()),1000)
+    return ()=>clearInterval(timer)
+  },[status.runId,status.status,finished,ended,running])
+  useEffect(()=>{
+    if(!running || !total)return
+    const list=samples.current
+    if(list.length && completed<list[list.length-1].n) list.length=0
+    list.push({at:now,n:completed})
+    while(list.length>1 && list[0].at<now-300000)list.shift()
+  },[now,running,total,completed])
+  const first=samples.current[0], dt=first?now-first.at:0
+  const eta=running && first && dt>=30000 && completed-first.n>=2 && total>completed ?
+    duration(dt*(total-completed)/(completed-first.n)):null
+  const estimate=ended?'已结束':status.status==='paused'?'已暂停':status.status==='offline'?'等待自动重试':
+    status.initialScanComplete?(status.mediaPending?'消息扫描完成，附件处理中':'本轮扫描完成'):eta?'约 '+eta:'采样中'
+  return <div className="sync-clock" aria-label="任务用时">
+    <span>开始时间{status.startEstimated?'（按旧版本地扫描时间估算）':''} <strong>{status.startedAt?new Date(status.startedAt).toLocaleString():'旧任务起点待中台确认'}</strong></span>
+    <span>已用时间（含暂停） <strong>{status.startedAt && (!ended || finished)?duration((finished||now)-status.startedAt):'—'}</strong></span>
+    <span>预计剩余（本轮会话） <strong>{estimate}</strong></span>
+    {status.status==='offline' && <small>下次重试约 {Math.max(0,Math.ceil(((status.retryAfter||now)-now)/1000))} 秒后</small>}
+  </div>
 }
 
 function ScopeProgress({ rows, counting, limitTarget, activeSessions, preview = false }: { rows: SessionProgress[]; counting?: boolean; limitTarget?:number; activeSessions?:number; preview?: boolean }) {
@@ -41,7 +81,7 @@ function ScopeProgress({ rows, counting, limitTarget, activeSessions, preview = 
       <p>{visible.length - groups} 位联系人、{groups} 个群聊，共 {total} 条符合条件的消息。</p>}
     {!preview && <><progress aria-label={countingNow ? '会话统计进度' : '总消息处理进度'} max={barMax} value={barValue}/>
       {!countingNow && <small>已处理 {done} / {total} 条，其中待核对 {failed} 条。附件单独统计。</small>}</>}
-    {!preview && <p className="sync-note">自适应并发：当前处理 {activeSessions ?? 0} 个会话，上限 {limitTarget ?? 16} 个（6～16）。进度自动保存；断线后按原范围继续，同一轮已完成的会话不会重扫。附件另计。</p>}
+    {!preview && <p className="sync-note">自适应并发：当前处理 {activeSessions ?? 0} 个会话，上限 {limitTarget ?? 16} 个（6～120）。进度自动保存；断线后按原范围继续，同一轮已完成的会话不会重扫。附件另计。</p>}
     <div className="sync-contact-progress" tabIndex={0} aria-label="各会话消息数和处理进度">
       {rows.slice(0,limit).map(r => <div key={r.id}><span>{r.name} <small>{r.group ? '群聊' : '私聊'}</small></span>
         {!preview && !r.singlePass && r.total > 0 && <progress aria-label={r.name + '处理进度'} max={Math.max(1,r.total)} value={r.processed}/>}
@@ -99,27 +139,56 @@ export default function HistorySyncPage() {
   },[currentRun,syncState,status?.accountWxid])
   const [error, setError] = useState('')
 
+  const account = status?.accountWxid
+  const bindingId = status?.binding?.id
+  const statusRef = useRef(status)
+  statusRef.current = status
+
   useEffect(() => {
+    let active = true
+    let received = false
+    const off = window.electronAPI.historySync.onStatus(value => {
+      received = true
+      setStatus(value)
+    })
     void window.electronAPI.historySync.status().then(value => {
-      setStatus(value); setOrigin(value.origin)
-      if(value.options.ordinalRange && (!selected || value.runId)){
-        setByNumber(true); setFirst(String(value.options.ordinalRange.first)); setLast(String(value.options.ordinalRange.last))
-      }
-      const dateLabel = (s: number) => s ? new Date(s * 1000 - new Date(s * 1000).getTimezoneOffset() * 60000).toISOString().slice(0, 10) : ''
-      setRange({ start: dateLabel(value.options.start), end: dateLabel(value.options.end) })
-      if (!selected || value.runId) { setOptions(value.options); setChoose(Boolean(value.options.sessions.length)) }
-    }).catch(e => setError(String(e)))
-    return window.electronAPI.historySync.onStatus(setStatus)
+      if (active && !received) setStatus(value)
+    }).catch(e => { if (active && !received) setError(String(e)) })
+    return () => { active = false; off() }
   }, [])
 
   useEffect(() => {
-    if (!isDbConnected) { setSessions([]); return }
+    const value = statusRef.current
+    if (!value) return
+    const restored = value.options.ordinalRange
+    const dateLabel = (time: number) => {
+      if (!time) return ''
+      const date = new Date(time * 1000)
+      return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0,10)
+    }
+    const shortcut = selected && !value.runId && !value.detachReason ? [selected] : undefined
+    setOptions(shortcut ? { ...value.options, sessions: shortcut } : value.options)
+    setChoose(Boolean(shortcut || value.options.sessions.length))
+    setByNumber(Boolean(restored))
+    setFirst(String(restored?.first ?? 1))
+    setLast(restored ? String(restored.last) : '')
+    setRange({ start: dateLabel(value.options.start), end: dateLabel(value.options.end) })
+    setOrigin(value.origin)
+    setCode('')
+    setSearch('')
+    setReview(null)
+    setError('')
+  }, [account, bindingId, selected])
+
+  useEffect(() => {
+    setSessions([])
+    if (!isDbConnected || !account) return
     let cancelled = false
     void window.electronAPI.historySync.sessions().then(value => {
       if (!cancelled) setSessions(value)
     }).catch(e => { if (!cancelled) setError(String(e)) })
     return () => { cancelled = true }
-  }, [isDbConnected])
+  }, [isDbConnected, account])
 
   const { toasts, add, remove } = useToast()
   const scopeHeading = useRef<HTMLHeadingElement>(null)
@@ -194,15 +263,24 @@ export default function HistorySyncPage() {
   const issues = Boolean(status?.failed || status?.mediaPending || status?.problems.length)
   const cycleTitle = following ? '本轮扫描已完成，持续补齐已开启' : paused ? '同步已暂停' :
     status?.status === 'completed' ? '本次同步已完成' : status?.status === 'partial' ? '本轮结束，仍有待处理记录' :
-    status?.status === 'offline' ? '等待连接恢复' : '正在同步所选记录'
+    status?.status === 'offline' ? '等待自动重试' : '正在同步所选记录'
   const pauseSync = () => void action(() => window.electronAPI.historySync.pause(), '已暂停后续扫描，已入库记录保留。')
-  const resumeSync = () => void action(() => window.electronAPI.historySync.resume(), '已按原范围继续同步。')
+  const resumeSync = () => void action(async () => {
+    const value = await window.electronAPI.historySync.resume()
+    if (value.status === 'running') add('已按原范围继续同步。')
+    return value
+  })
+  const unbindSync = async () => {
+    setError('')
+    try { setStatus(await window.electronAPI.historySync.unbind()) }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+  }
   return <div className="history-sync-page">
     <ToastProvider toasts={toasts} onRemove={remove} />
     <header><CloudUpload size={30} /><div><h1>同步到汉小密中台</h1><p>把本机聊天记录补入中台同一个微信的会话中。</p></div>
       <span className={`sync-status ${running ? 'active' : ''}`}>{following ? '首轮已扫描 · 持续补齐中' : status ? labels[status.status] : '正在读取状态'}</span></header>
     {hasRun && status && <section className="sync-card sync-outcome" aria-labelledby="sync-outcome-title">
-      <div><h2 id="sync-outcome-title" role="status">{cycleTitle}</h2>
+      <div><h2 id="sync-outcome-title" role="status">{cycleTitle}</h2><RunClock status={status}/>
         <p><strong>本次新增 {status.inserted} 条</strong> · {status.binding?.account_name}
           {status.lastSuccess && <> · 最近确认 {new Date(status.lastSuccess).toLocaleTimeString()}</>}</p>
         <p className="sync-note">{following ? '保持开启会定期检查所选范围。现在暂停也会保留已入库的消息。' :
@@ -220,16 +298,24 @@ export default function HistorySyncPage() {
     </section>}
     <section className="sync-card">
       <h2>连接与账号</h2>
+      {status?.detaching ? <p role="status">正在停止原任务并保存进度。中台已接收的批次可能继续入库。</p> :
+        !bound && status?.detachReason && <p role="status">
+          {status.detachReason === 'account-change' ? '微信已切换，原同步绑定已解除，进度已保留。' : '本机已解除同步绑定，进度已保留。'}
+        </p>}
+      {!!status?.revocationsPending && <p className="sync-note" role="status">还有 {status.revocationsPending} 个旧绑定等待中台确认撤销。WeFlow 会自动重试。</p>}
+      {status?.recovering && <p className="sync-note" role="status">
+        已找到该微信的原任务。{paused ? '点击「按原范围继续」核对待确认批次并续传。' : '可查看原任务的对账报告。'}
+      </p>}
       <div className="sync-account"><span>本地微信</span><strong>{status?.accountWxid || '请先连接微信数据库'}</strong></div>
       {bound ? <>
         <div className="sync-account"><span>目标中台</span><strong>{status!.binding!.tenant_name} · {status!.binding!.account_name}</strong></div>
         <div className="sync-account"><span>微信身份</span><code>{status!.binding!.account_wxid}</code></div>
         <p className="sync-note">{status!.origin} · 原有客户资料、员工归属和微信登录状态保持不变。</p>
-        <button disabled={busy || running} onClick={() => void action(() => window.electronAPI.historySync.unbind())}>解除同步绑定</button>
+        <button onClick={() => void unbindSync()}>{running ? '停止同步并解除绑定' : '解除同步绑定'}</button>
       </> : <div className="sync-binding">
         <label>中台地址<input value={origin} onChange={e => setOrigin(e.target.value)} placeholder="https://zt.hmed1991.com" /></label>
         <label>绑定码<input value={code} onChange={e => setCode(e.target.value)} placeholder="在中台微信账号列表点击「本地历史同步」获取" autoComplete="off" /></label>
-        <button className="primary" disabled={busy || !code.trim()} onClick={() => void action(async () => {
+        <button className="primary" disabled={busy || status?.detaching || !code.trim()} onClick={() => void action(async () => {
           const value = await window.electronAPI.historySync.bind(origin, code); setCode(''); return value
         })}><Link2 size={16} />绑定同一个微信</button>
         <p className="sync-note">绑定码 10 分钟内有效。首次绑定后，后续可直接同步。</p>
@@ -238,7 +324,7 @@ export default function HistorySyncPage() {
     <section className="sync-card">
       <h2 ref={scopeHeading} tabIndex={-1}>同步范围</h2>
       {!isDbConnected && <p className="sync-error" role="status">本地微信数据库尚未连接，绑定配置可以查看，连接成功后才能读取和同步聊天。{dbConnectionError || ''}</p>}
-      <fieldset disabled={running || busy}>
+      <fieldset disabled={running || busy || status?.detaching}>
         <div className="sync-options"><label><input type="radio" checked={!byNumber && !choose} onChange={() => { setByNumber(false);setChoose(false) }} />全部私聊和群聊</label>
           <label><input type="radio" checked={!byNumber && choose} onChange={() => {setByNumber(false);setChoose(true)}} />选择会话</label>
           <label><input type="radio" checked={byNumber} onChange={()=>setByNumber(true)} />按会话序号</label></div>
@@ -299,7 +385,8 @@ export default function HistorySyncPage() {
         <p>中台已确认来源 {status.legacyRecovery.reportConfirmed.toLocaleString()} 条，待核对 {status.legacyRecovery.reportPending} 条，涉及 {status.legacyRecovery.reportPeers} 个会话。</p>
         <p>本次比对已检查 {status.legacyRecovery.examined} / {status.legacyRecovery.planned} 个候选会话；已按摘要恢复 {status.legacyRecovery.restoredPeers || 0} 个完整会话，跳过 {status.legacyRecovery.restoredMessages || 0} 条正文。</p>
       </div>}
-      {status?.readerCount !== undefined && <p className="sync-note">读取线程 {status.readerCount} / 16，查询中 {status.activeReaders ?? 0} · 对账请求 {status.activeChecks ?? 0} · 正文或附件提交 {status.activeUploads ?? 0}</p>}
+      {status?.sendLimit !== undefined && <p>发送并发上限 {status.sendLimit} · {status.feedbackLabel}</p>}
+      {status?.readerCount !== undefined && <p className="sync-note">本批目标 {status.batchRows ?? 128} 条 / {Math.round((status.batchBytes ?? 524288)/1024)} KiB · 读取线程 {status.readerCount} / 120，查询中 {status.activeReaders ?? 0} · 对账请求 {status.activeChecks ?? 0} · 正文或附件提交 {status.activeUploads ?? 0}</p>}
       {status?.sessionProgress && <ScopeProgress limitTarget={status.concurrencyLimit} activeSessions={status.activeSessions} rows={status.sessionProgress} counting={status.progressPhase === 'counting'}/>}
       {status?.legacyRecovery?.runId && status.legacyRecovery.runId===currentRun && <section className="sync-range-progress" role="status">
         <strong>已接入旧版原任务</strong><p>旧版累计已读取 {status.legacyRecovery.previousScanned.toLocaleString()} 条次。逐条编号对账另跳过正文 {status.legacyRecovery.checked.toLocaleString()} 条。</p>
@@ -311,7 +398,7 @@ export default function HistorySyncPage() {
           <p>本机近 60 秒已获回执的正文和附件速率 <strong>{(transfer.bytesPerSecond/1024).toFixed(1)} KiB/s</strong> · 编号对账 {((transfer.checkBytesPerSecond || 0)/1024).toFixed(1)} KiB/s（{transfer.checkRequests || 0} 次/分钟） · 待确认 {transfer.clientPending} 批 · 已上传并对账 {transfer.clientAcknowledged.toLocaleString()} 条次</p>
           {transfer.server ? <>
             <p>中台累计接收 <strong>{transfer.server.accepted_batches.toLocaleString()} 批</strong> · 已消费 {transfer.server.committed_batches.toLocaleString()} 批 · 新增入库 <strong>{transfer.server.inserted.toLocaleString()} 条</strong></p>
-            <p>{transfer.server.queue_enabled ? `排队 ${transfer.server.queued_batches} 批 · 写入中 ${transfer.server.processing} / ${transfer.server.worker_limit} · 批次失败 ${transfer.server.failed_batches} · 最老未完成批次 ${transfer.server.oldest_seconds} 秒` : '本任务采用直接入库模式'}</p>
+            <p>{transfer.server.queue_enabled ? `排队 ${transfer.server.queued_batches} 批 · 写入中 ${transfer.server.processing} / ${transfer.server.worker_limit} · 空闲写入槽 ${transfer.server.free_slots ?? '—'} · 批次失败 ${transfer.server.failed_batches} · 最老未完成批次 ${transfer.server.oldest_seconds} 秒` : '本任务采用直接入库模式'}</p>
             <p>最近 60 秒处理 {transfer.server.processed_per_minute} 条次，其中新增 {transfer.server.inserted_per_minute} 条 · 更新于 {new Date(transfer.server.sampled_at).toLocaleTimeString()}</p>
           </> : <p role="status">{transfer.counts ? `中台原任务累计新增 ${(transfer.counts.inserted || 0).toLocaleString()} 条，已有匹配 ${(transfer.counts.existing || 0).toLocaleString()} 次，待处理 ${(transfer.counts.failed || 0).toLocaleString()} 次。` : '暂未取得中台原任务统计。'} 详细队列深度请在中台微信账号页查看。</p>}
           <p>近一分钟典型耗时 · 数据库读取 {transfer.readMs == null ? '—' : transfer.readMs+' ms'} · 批次提交至回执 {transfer.batchMs == null ? '—' : transfer.batchMs+' ms'} · 编号对账 {transfer.checkMs == null ? '—' : transfer.checkMs+' ms'}</p>
